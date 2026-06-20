@@ -44,9 +44,10 @@ Before your first real engagement, read:
 
 This project is being built in public, sprint by sprint — see
 [milestones](https://github.com/quaresma870/redteam-toolkit/milestones) for
-the full roadmap. **Sprints 0-3 are complete**: authorization/scope
-enforcement, reconnaissance, vulnerability identification, and non-destructive
-active detection. Reporting is not built yet.
+the full roadmap. **Sprints 0-4 are complete**: authorization/scope
+enforcement, reconnaissance, vulnerability identification, non-destructive
+active detection, and full engagement reporting (HTML, PDF, dashboard).
+Production hardening and distribution (Sprint 5) is not done yet.
 
 ---
 
@@ -82,6 +83,13 @@ PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules default
 #    typing the engagement ID to confirm intent, every single invocation
 PYTHONPATH=. python -m redteam_toolkit.cli active example.com --confirm acme-2026-q2
 PYTHONPATH=. python -m redteam_toolkit.cli active example.com --confirm acme-2026-q2 --modules sqli_detection,xss_detection
+
+# 8. Persist results across the engagement (add --db to recon/vuln-id/active above), then report
+PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --db engagements.db
+PYTHONPATH=. python -m redteam_toolkit.cli report --db engagements.db --format both
+
+# 9. Browse engagement history — read-only, not authenticated by default
+PYTHONPATH=. python -m redteam_toolkit.cli serve --db engagements.db
 ```
 
 ### authorization.yml
@@ -142,7 +150,15 @@ redteam-toolkit/
 │   │   ├── engagement.py        # Engagement — scope gate + active-tier confirmation gate
 │   │   ├── models.py            # Finding, ModuleResult, EngagementReport
 │   │   ├── netutil.py           # bare-host extraction for scope checks on URL-style targets
-│   │   └── rate_limit.py        # shared rate limiter for high-volume modules
+│   │   ├── rate_limit.py        # shared rate limiter for high-volume modules
+│   │   ├── cvss.py              # project-wide CVSS scoring rubric
+│   │   └── history.py           # SQLite persistence of module results, keyed by engagement_id
+│   ├── reports/
+│   │   ├── build.py             # assembles a full EngagementReport from authorization + history
+│   │   ├── html.py              # self-contained HTML report (zero external requests)
+│   │   └── pdf.py                # PDF export via reportlab — no headless-browser dependency
+│   ├── dashboard/
+│   │   └── app.py                # read-only FastAPI dashboard — not authenticated by default
 │   ├── recon/
 │   │   ├── port_scanner.py
 │   │   ├── fingerprint.py
@@ -170,6 +186,7 @@ redteam-toolkit/
 │   ├── recon/
 │   ├── vuln_id/
 │   ├── active/
+│   ├── reports/                 # history, CVSS, HTML/PDF generators, dashboard, report CLI
 │   └── test_redteam_toolkit.py  # Sprint 0 foundation tests
 ├── docs/
 │   ├── legal-and-ethics.md

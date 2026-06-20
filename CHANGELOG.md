@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.5.0 — Sprint 4: Reporting
+- feat: `core/history.py` — SQLite persistence keyed by `engagement_id`, so module results from
+  separate `recon`/`vuln-id`/`active` CLI invocations (across an entire engagement) combine into
+  one report. Migrates existing databases automatically (verified against a hand-built
+  pre-migration schema, not just the happy path).
+- feat: `reports/build.py` — assembles a full `EngagementReport` from the validated
+  `Authorization`, the audit log integrity check, and persisted module results; persists an
+  integrity snapshot back to the database so the dashboard can reconstruct an equivalent report
+  later without access to the original `authorization.yml`/audit log files.
+- feat: `reports/html.py` — self-contained HTML report (zero external requests, not even a CDN):
+  executive summary with risk posture, scope & authorization recap, modules-run summary,
+  technical findings sorted by severity.
+- feat: `reports/pdf.py` — PDF export via `reportlab` (pure-Python, no headless-browser or
+  Cairo/Pango system dependency) with equivalent content to the HTML report.
+- feat: `core/cvss.py` — CVSS scoring rubric generalised project-wide (previously vuln-id-only);
+  `vuln_id/aggregate.py` re-exports it for backward compatibility. Confirmed against a real
+  pipeline run that `zone_transfer`'s HIGH-severity finding (which never sets an explicit score)
+  correctly receives the rubric's 7.5 when a report is built.
+- feat: `dashboard/app.py` — read-only FastAPI dashboard (`redteam-toolkit serve`), mirroring this
+  portfolio's existing dashboard pattern; not authenticated by default, same caution as the others.
+- feat: CLI — `--db` added to `recon`/`vuln-id`/`active` to persist results; new `report` command
+  (`--format html|pdf|both`); new `serve` command.
+- fix: a real, self-referential bug caught by a new test before merge — the HTML report embeds
+  the full `EngagementReport` as JSON inside a `<script>` tag for potential client-side use, but
+  serialised it with `json.dumps()` directly. A finding's `evidence` field can contain the exact
+  payload being reported on (e.g. an XSS detection's raw `<script>` tag) — if that string contains
+  the literal sequence `</script`, it breaks out of the script tag and injects raw HTML into the
+  report itself. Fixed by escaping `</` to `<\\/` before embedding (valid JSON either way, since
+  JSON doesn't require forward slashes to be escaped but permits it). The exact same class of bug
+  was also fixed in the dashboard's findings table, which rendered finding title/target/module
+  content unescaped.
+
 ### v0.4.0 — Sprint 3: Active Detection
 - feat: **active-tier confirmation gate** (`Engagement.confirm_active_tier()`) — on top of
   `'active'` being in `authorization.yml`'s `allowed_categories`, every CLI session must type the

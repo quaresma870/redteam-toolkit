@@ -20,6 +20,28 @@ from rich.table import Table
 
 console = Console()
 
+
+def _register_engagement(db_path: str, eng) -> None:
+    from redteam_toolkit.core.history import register_engagement
+
+    auth = eng.authorization
+    register_engagement(
+        db_path,
+        engagement_id=auth.engagement_id,
+        client=auth.client,
+        authorized_by=auth.authorized_by,
+        target_scope=auth.scope.targets,
+        window_start=auth.window.start.isoformat(),
+        window_end=auth.window.end.isoformat(),
+    )
+
+
+def _save_module_result(db_path: str, eng, target: str, result) -> None:
+    from redteam_toolkit.core.history import save_module_result
+
+    save_module_result(db_path, eng.authorization.engagement_id, target, result)
+
+
 try:
     __version__ = importlib.metadata.version("redteam-toolkit")
 except importlib.metadata.PackageNotFoundError:
@@ -183,7 +205,9 @@ def status(authorization, audit_log):
               help="Comma-separated modules to run (default: all recon modules)")
 @click.option("--aggressive", is_flag=True,
               help="Raise rate limits beyond the safe default. Prints a warning before running.")
-def recon(target, authorization, audit_log, modules, aggressive):
+@click.option("--db", default=None,
+              help="SQLite database to persist results for the 'report' command and dashboard.")
+def recon(target, authorization, audit_log, modules, aggressive, db):
     """Run reconnaissance modules against TARGET.
 
     Every module call goes through the engagement's scope gate first — a
@@ -223,6 +247,9 @@ def recon(target, authorization, audit_log, modules, aggressive):
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
 
+    if db:
+        _register_engagement(db, eng)
+
     available = {
         "port_scanner": lambda: PortScannerModule(
             eng, rate_per_second=PORT_AGGRESSIVE if aggressive else PORT_SAFE,
@@ -261,6 +288,8 @@ def recon(target, authorization, audit_log, modules, aggressive):
                 f"({result.duration_ms:.0f}ms)"
             )
         all_findings.extend(result.findings)
+        if db:
+            _save_module_result(db, eng, target, result)
 
     if all_findings:
         t = Table(box=box.SIMPLE_HEAD, show_lines=True)
@@ -274,6 +303,9 @@ def recon(target, authorization, audit_log, modules, aggressive):
     else:
         console.print("\n[dim]No findings.[/dim]")
 
+    if db:
+        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
+
 
 @cli.command(name="vuln-id")
 @click.argument("target")
@@ -286,13 +318,15 @@ def recon(target, authorization, audit_log, modules, aggressive):
 @click.option("--check-default-creds", is_flag=True,
               help="Opt in to the default-credential spot-check — off by default even if requested via --modules.")
 @click.option("--tls-port", default=443, show_default=True, help="Port to use for the TLS analyzer.")
-def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_port):
+@click.option("--db", default=None,
+              help="SQLite database to persist results for the 'report' command and dashboard.")
+def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_port, db):
     """Run vulnerability identification modules against TARGET. Read-only —
     no exploitation, no credential brute-forcing.
     """
     from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.cvss import ensure_cvss_score
     from redteam_toolkit.core.engagement import Engagement
-    from redteam_toolkit.vuln_id.aggregate import ensure_cvss_score
     from redteam_toolkit.vuln_id.cve_correlation import CVECorrelationModule
     from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
     from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
@@ -303,6 +337,9 @@ def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
+
+    if db:
+        _register_engagement(db, eng)
 
     available = {
         "cve_correlation": lambda: CVECorrelationModule(eng),
@@ -341,6 +378,8 @@ def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_
         for f in result.findings:
             ensure_cvss_score(f)
         all_findings.extend(result.findings)
+        if db:
+            _save_module_result(db, eng, target, result)
 
     if all_findings:
         t = Table(box=box.SIMPLE_HEAD, show_lines=True)
@@ -354,6 +393,9 @@ def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_
         console.print(t)
     else:
         console.print("\n[dim]No findings.[/dim]")
+
+    if db:
+        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
 
 
 @cli.command()
@@ -369,7 +411,9 @@ def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_
                    "to run active-tier checks. Required every invocation — not a boolean flag.")
 @click.option("--canary-host", default="127.0.0.1", show_default=True,
               help="Host to bind the local SSRF canary listener to.")
-def active(target, authorization, audit_log, modules, confirm, canary_host):
+@click.option("--db", default=None,
+              help="SQLite database to persist results for the 'report' command and dashboard.")
+def active(target, authorization, audit_log, modules, confirm, canary_host, db):
     """Run active-tier detection modules against TARGET.
 
     Non-destructive confirmation only — never exploitation. Requires
@@ -398,6 +442,9 @@ def active(target, authorization, audit_log, modules, confirm, canary_host):
         sys.exit(1)
 
     console.print("[green]✔[/green] Active-tier confirmed for this session.\n")
+
+    if db:
+        _register_engagement(db, eng)
 
     canary = LocalCanaryListener(host=canary_host)
     try:
@@ -428,6 +475,8 @@ def active(target, authorization, audit_log, modules, confirm, canary_host):
                     f"({result.duration_ms:.0f}ms)"
                 )
             all_findings.extend(result.findings)
+            if db:
+                _save_module_result(db, eng, target, result)
 
         if all_findings:
             t = Table(box=box.SIMPLE_HEAD, show_lines=True)
@@ -440,8 +489,87 @@ def active(target, authorization, audit_log, modules, confirm, canary_host):
             console.print(t)
         else:
             console.print("\n[dim]No findings.[/dim]")
+
+        if db:
+            console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
     finally:
         canary.shutdown()
+
+
+@cli.command()
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--db", required=True, help="SQLite database with persisted module results.")
+@click.option("--format", "fmt", type=click.Choice(["html", "pdf", "both"]), default="html", show_default=True)
+@click.option("--output", "-o", default=None,
+              help="Output path (default: <engagement_id>-report.<ext>)")
+def report(authorization, audit_log, db, fmt, output):
+    """Generate a full engagement report from everything persisted to --db
+    so far (across however many separate recon/vuln-id/active invocations).
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError, load_authorization
+    from redteam_toolkit.reports.build import build_report
+
+    try:
+        auth = load_authorization(authorization)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    log_path = (
+        Path(audit_log) if audit_log
+        else Path(authorization).parent / f"{auth.engagement_id}.audit.jsonl"
+    )
+
+    rpt = build_report(auth, log_path, db)
+    console.print(
+        f"[bold]Engagement:[/bold] {rpt.engagement_id} — "
+        f"{len(rpt.all_findings)} finding(s) across {len(rpt.module_results)} module(s)"
+    )
+
+    base = output or auth.engagement_id
+
+    if fmt in ("html", "both"):
+        from redteam_toolkit.reports.html import write_html
+        html_path = base if base.endswith(".html") else f"{base}-report.html"
+        write_html(rpt, html_path)
+        console.print(f"[green]✔[/green] HTML report: [bold]{html_path}[/bold]")
+
+    if fmt in ("pdf", "both"):
+        from redteam_toolkit.reports.pdf import write_pdf
+        pdf_path = base if base.endswith(".pdf") else f"{base}-report.pdf"
+        write_pdf(rpt, pdf_path)
+        console.print(f"[green]✔[/green] PDF report: [bold]{pdf_path}[/bold]")
+
+
+@cli.command()
+@click.option("--db", default="engagements.db", show_default=True,
+              help="SQLite database with engagement history.")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8090, show_default=True)
+def serve(db, host, port):
+    """Start the read-only web dashboard for engagement history.
+
+    ⚠️ Not authenticated by default — do not expose this beyond localhost
+    without putting an auth layer in front of it.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]Dashboard dependencies missing.[/red] Install with: "
+            "pip install redteam-toolkit[dashboard]"
+        )
+        sys.exit(1)
+
+    from redteam_toolkit.dashboard.app import create_app
+
+    console.print(f"[bold cyan]🎯 redteam-toolkit Dashboard[/bold cyan] → http://{host}:{port}")
+    console.print("[yellow]⚠ Not authenticated — localhost only unless you add auth in front of it.[/yellow]\n")
+    app = create_app(db)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 def main():
