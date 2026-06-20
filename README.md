@@ -44,9 +44,9 @@ Before your first real engagement, read:
 
 This project is being built in public, sprint by sprint — see
 [milestones](https://github.com/quaresma870/redteam-toolkit/milestones) for
-the full roadmap. **Sprint 0 (this release) is foundation only**: the
-authorization/scope engine and audit logging that every later module depends
-on. There are no scanning modules yet.
+the full roadmap. **Sprints 0-1 are complete**: authorization/scope
+enforcement and the first reconnaissance modules. Vulnerability
+identification, active detection, and reporting are not built yet.
 
 ---
 
@@ -67,6 +67,11 @@ PYTHONPATH=. python -m redteam_toolkit.cli validate-scope
 
 # 4. Check engagement status (time remaining, audit log integrity)
 PYTHONPATH=. python -m redteam_toolkit.cli status
+
+# 5. Run reconnaissance modules — every call goes through the scope gate
+PYTHONPATH=. python -m redteam_toolkit.cli recon example.com
+PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules port_scanner,web_fingerprint
+PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --aggressive   # raises rate limits, prints a warning
 ```
 
 ### authorization.yml
@@ -120,12 +125,21 @@ valid, broken_at_line = verify_log_integrity("acme-2026-q2.audit.jsonl")
 ```
 redteam-toolkit/
 ├── redteam_toolkit/
-│   ├── cli.py                   # init, validate-scope, status
-│   └── core/
-│       ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching
-│       ├── audit_log.py         # hash-chained, append-only audit log
-│       ├── engagement.py        # Engagement — the structural scope-enforcement gate
-│       └── models.py            # Finding, ModuleResult, EngagementReport
+│   ├── cli.py                   # init, validate-scope, status, recon
+│   ├── core/
+│   │   ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching
+│   │   ├── audit_log.py         # hash-chained, append-only audit log
+│   │   ├── engagement.py        # Engagement — the structural scope-enforcement gate
+│   │   ├── models.py            # Finding, ModuleResult, EngagementReport
+│   │   ├── netutil.py           # bare-host extraction for scope checks on URL-style targets
+│   │   └── rate_limit.py        # shared rate limiter for high-volume modules
+│   └── recon/
+│       ├── port_scanner.py
+│       ├── fingerprint.py
+│       ├── passive_dns.py
+│       ├── active_dns.py        # ActiveDNSModule + ZoneTransferModule
+│       ├── web_fingerprint.py
+│       └── endpoint_discovery.py
 ├── tests/
 │   ├── fixtures/mock_target/    # local-only mock HTTP target for CI (never real targets)
 │   └── test_redteam_toolkit.py
@@ -138,6 +152,22 @@ redteam-toolkit/
 ---
 
 ## Changelog
+
+### v0.2.0 — Sprint 1: Recon
+- feat: `port_scanner` — TCP connect scan, rate-limited by default (50/sec safe, 200/sec with `--aggressive`)
+- feat: `fingerprint` — banner-grab service/version identification (OpenSSH, nginx, Apache, ProFTPD, vsFTPd, Postfix)
+- feat: `passive_dns` — subdomain discovery via certificate transparency logs, zero contact with the target
+- feat: `active_dns` — wordlist subdomain brute force (rate-limited) + `zone_transfer` AXFR misconfiguration check
+- feat: `web_fingerprint` — Server/X-Powered-By headers, lightweight CMS signature detection
+- feat: `endpoint_discovery` — robots.txt/sitemap.xml parsed directly, then a curated wordlist probe with path categorisation
+- feat: CLI `recon` command ties all modules together against one target, through the scope gate
+- fix: `web_fingerprint`/`endpoint_discovery` accept a target that may include a scheme/port (since they need
+  a full URL to make an HTTP request) — but were passing that full URL straight to the scope gate, which
+  only ever matches bare hosts/IPs/domains per `authorization.yml`'s schema. A URL-style target was therefore
+  *always* refused even when the bare host was correctly in scope. Fixed with a shared `extract_host()`
+  helper used before every `authorize_action()` call in both modules; the original target string is still
+  used for the actual HTTP request. Caught during manual end-to-end validation before any test existed —
+  locked in with regression tests in both modules' test files.
 
 ### v0.1.0 — Sprint 0: Foundation & Safety
 - feat: `authorization.yml` schema + validator (CIDR/wildcard scope matching, time window)

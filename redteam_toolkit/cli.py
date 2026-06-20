@@ -173,6 +173,108 @@ def status(authorization, audit_log):
         console.print("[dim]Audit log: none yet[/dim]")
 
 
+@cli.command()
+@click.argument("target")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated modules to run (default: all recon modules)")
+@click.option("--aggressive", is_flag=True,
+              help="Raise rate limits beyond the safe default. Prints a warning before running.")
+def recon(target, authorization, audit_log, modules, aggressive):
+    """Run reconnaissance modules against TARGET.
+
+    Every module call goes through the engagement's scope gate first — a
+    target outside the authorized scope or time window is refused and
+    logged, not silently skipped.
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.engagement import Engagement
+    from redteam_toolkit.recon.active_dns import (
+        AGGRESSIVE_RATE_PER_SECOND as DNS_AGGRESSIVE,
+    )
+    from redteam_toolkit.recon.active_dns import (
+        SAFE_RATE_PER_SECOND as DNS_SAFE,
+    )
+    from redteam_toolkit.recon.active_dns import ActiveDNSModule, ZoneTransferModule
+    from redteam_toolkit.recon.endpoint_discovery import (
+        AGGRESSIVE_RATE_PER_SECOND as ENDPOINT_AGGRESSIVE,
+    )
+    from redteam_toolkit.recon.endpoint_discovery import (
+        SAFE_RATE_PER_SECOND as ENDPOINT_SAFE,
+    )
+    from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+    from redteam_toolkit.recon.fingerprint import FingerprintModule
+    from redteam_toolkit.recon.passive_dns import PassiveDNSModule
+    from redteam_toolkit.recon.port_scanner import (
+        AGGRESSIVE_RATE_PER_SECOND as PORT_AGGRESSIVE,
+    )
+    from redteam_toolkit.recon.port_scanner import (
+        SAFE_RATE_PER_SECOND as PORT_SAFE,
+    )
+    from redteam_toolkit.recon.port_scanner import PortScannerModule
+    from redteam_toolkit.recon.web_fingerprint import WebFingerprintModule
+
+    try:
+        eng = Engagement.load(authorization, audit_log)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    available = {
+        "port_scanner": lambda: PortScannerModule(
+            eng, rate_per_second=PORT_AGGRESSIVE if aggressive else PORT_SAFE,
+        ),
+        "fingerprint": lambda: FingerprintModule(eng),
+        "passive_dns": lambda: PassiveDNSModule(eng),
+        "active_dns": lambda: ActiveDNSModule(
+            eng, rate_per_second=DNS_AGGRESSIVE if aggressive else DNS_SAFE,
+        ),
+        "zone_transfer": lambda: ZoneTransferModule(eng),
+        "web_fingerprint": lambda: WebFingerprintModule(eng),
+        "endpoint_discovery": lambda: EndpointDiscoveryModule(
+            eng, rate_per_second=ENDPOINT_AGGRESSIVE if aggressive else ENDPOINT_SAFE,
+        ),
+    }
+
+    selected = [m.strip() for m in modules.split(",")] if modules else list(available.keys())
+
+    console.print()
+    console.rule(f"[bold cyan]🎯 Recon: {target}[/bold cyan]")
+    if aggressive:
+        console.print("\n[yellow]⚠ --aggressive: rate limits raised above the safe default.[/yellow]")
+    console.print()
+
+    all_findings = []
+    for name in selected:
+        if name not in available:
+            console.print(f"[red]Unknown module: {name}[/red]")
+            continue
+        result = available[name]().run(target)
+        if result.error:
+            console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
+        else:
+            console.print(
+                f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
+                f"({result.duration_ms:.0f}ms)"
+            )
+        all_findings.extend(result.findings)
+
+    if all_findings:
+        t = Table(box=box.SIMPLE_HEAD, show_lines=True)
+        t.add_column("Module")
+        t.add_column("Title", overflow="fold")
+        t.add_column("Severity")
+        for f in all_findings:
+            t.add_row(f.module, f.title, f.severity.value)
+        console.print()
+        console.print(t)
+    else:
+        console.print("\n[dim]No findings.[/dim]")
+
+
 def main():
     cli()
 
