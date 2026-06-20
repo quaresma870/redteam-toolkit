@@ -44,9 +44,9 @@ Before your first real engagement, read:
 
 This project is being built in public, sprint by sprint — see
 [milestones](https://github.com/quaresma870/redteam-toolkit/milestones) for
-the full roadmap. **Sprints 0-1 are complete**: authorization/scope
-enforcement and the first reconnaissance modules. Vulnerability
-identification, active detection, and reporting are not built yet.
+the full roadmap. **Sprints 0-2 are complete**: authorization/scope
+enforcement, reconnaissance, and read-only vulnerability identification.
+Active detection and reporting are not built yet.
 
 ---
 
@@ -72,6 +72,11 @@ PYTHONPATH=. python -m redteam_toolkit.cli status
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules port_scanner,web_fingerprint
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --aggressive   # raises rate limits, prints a warning
+
+# 6. Run vulnerability identification modules — read-only, no exploitation
+PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com
+PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules tls_analyzer,http_posture
+PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules default_credentials --check-default-creds
 ```
 
 ### authorization.yml
@@ -140,6 +145,12 @@ redteam-toolkit/
 │       ├── active_dns.py        # ActiveDNSModule + ZoneTransferModule
 │       ├── web_fingerprint.py
 │       └── endpoint_discovery.py
+│   └── vuln_id/
+│       ├── cve_correlation.py   # fingerprinted versions → NVD CVE lookup
+│       ├── tls_analyzer.py      # protocol/cipher/cert inspection, no exploit payloads
+│       ├── http_posture.py      # headers, cookies, CORS
+│       ├── default_credentials.py  # curated spot-check, single attempt per pair, opt-in only
+│       └── aggregate.py         # CVSS scoring guarantee + target/severity grouping
 ├── tests/
 │   ├── fixtures/mock_target/    # local-only mock HTTP target for CI (never real targets)
 │   └── test_redteam_toolkit.py
@@ -152,6 +163,30 @@ redteam-toolkit/
 ---
 
 ## Changelog
+
+### v0.3.0 — Sprint 2: Vulnerability Identification
+- feat: `cve_correlation` — fingerprinted service versions → NVD CVE lookup, CVSS-mapped severity
+- feat: `tls_analyzer` — deprecated protocol/weak cipher detection, certificate expiry and
+  hostname-mismatch checks, entirely passive (no Heartbleed-style exploit probes)
+- feat: `http_posture` — security headers, cookie flags, CORS misconfiguration on live targets
+- feat: `default_credentials` — the highest-risk module in this sprint, built conservatively:
+  a small curated list (not a wordlist), exactly one attempt per pair, a stricter rate limit than
+  every other module, and **mandatory explicit opt-in even when `vuln-id` is an authorized
+  category** — being in scope for the category is not the same as opting into this specific check.
+  No protocol-specific login client ships by default; `try_login_fn` is the extension point.
+- feat: `aggregate.ensure_cvss_score()` — every finding gets a CVSS score, either from a real CVE
+  record or the documented internal rubric (`docs/cvss-rubric.md`)
+- feat: CLI `vuln-id` command — `default_credentials` is excluded from the default module
+  selection even when explicitly named via `--modules` unless `--check-default-creds` is also passed
+- fix: `TLSAnalyzerModule`'s certificate inspection initially used `ssl.getpeercert()`, which
+  returns an **empty dict** whenever `verify_mode=CERT_NONE` (necessary here, since the whole
+  point is to inspect untrusted/self-signed certificates without rejecting them first) — meaning
+  certificate expiry and hostname checks silently never fired against any real target. Caught by
+  an end-to-end test against a real generated self-signed certificate, not just injected data.
+  Fixed by parsing the certificate's DER bytes directly via `cryptography` (now a runtime
+  dependency, not just a test dependency) instead of relying on the stdlib's parsed-dict
+  representation.
+- dep: added `dnspython` (Sprint 1) and `cryptography` (this sprint) as runtime dependencies
 
 ### v0.2.0 — Sprint 1: Recon
 - feat: `port_scanner` — TCP connect scan, rate-limited by default (50/sec safe, 200/sec with `--aggressive`)
