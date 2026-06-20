@@ -44,9 +44,9 @@ Before your first real engagement, read:
 
 This project is being built in public, sprint by sprint — see
 [milestones](https://github.com/quaresma870/redteam-toolkit/milestones) for
-the full roadmap. **Sprints 0-2 are complete**: authorization/scope
-enforcement, reconnaissance, and read-only vulnerability identification.
-Active detection and reporting are not built yet.
+the full roadmap. **Sprints 0-3 are complete**: authorization/scope
+enforcement, reconnaissance, vulnerability identification, and non-destructive
+active detection. Reporting is not built yet.
 
 ---
 
@@ -77,6 +77,11 @@ PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --aggressive   # ra
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules tls_analyzer,http_posture
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules default_credentials --check-default-creds
+
+# 7. Run active-tier detection — requires 'active' in allowed_categories AND
+#    typing the engagement ID to confirm intent, every single invocation
+PYTHONPATH=. python -m redteam_toolkit.cli active example.com --confirm acme-2026-q2
+PYTHONPATH=. python -m redteam_toolkit.cli active example.com --confirm acme-2026-q2 --modules sqli_detection,xss_detection
 ```
 
 ### authorization.yml
@@ -130,39 +135,80 @@ valid, broken_at_line = verify_log_integrity("acme-2026-q2.audit.jsonl")
 ```
 redteam-toolkit/
 ├── redteam_toolkit/
-│   ├── cli.py                   # init, validate-scope, status, recon
+│   ├── cli.py                   # init, validate-scope, status, recon, vuln-id, active
 │   ├── core/
 │   │   ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching
 │   │   ├── audit_log.py         # hash-chained, append-only audit log
-│   │   ├── engagement.py        # Engagement — the structural scope-enforcement gate
+│   │   ├── engagement.py        # Engagement — scope gate + active-tier confirmation gate
 │   │   ├── models.py            # Finding, ModuleResult, EngagementReport
 │   │   ├── netutil.py           # bare-host extraction for scope checks on URL-style targets
 │   │   └── rate_limit.py        # shared rate limiter for high-volume modules
-│   └── recon/
-│       ├── port_scanner.py
-│       ├── fingerprint.py
-│       ├── passive_dns.py
-│       ├── active_dns.py        # ActiveDNSModule + ZoneTransferModule
-│       ├── web_fingerprint.py
-│       └── endpoint_discovery.py
-│   └── vuln_id/
-│       ├── cve_correlation.py   # fingerprinted versions → NVD CVE lookup
-│       ├── tls_analyzer.py      # protocol/cipher/cert inspection, no exploit payloads
-│       ├── http_posture.py      # headers, cookies, CORS
-│       ├── default_credentials.py  # curated spot-check, single attempt per pair, opt-in only
-│       └── aggregate.py         # CVSS scoring guarantee + target/severity grouping
+│   ├── recon/
+│   │   ├── port_scanner.py
+│   │   ├── fingerprint.py
+│   │   ├── passive_dns.py
+│   │   ├── active_dns.py        # ActiveDNSModule + ZoneTransferModule
+│   │   ├── web_fingerprint.py
+│   │   └── endpoint_discovery.py
+│   ├── vuln_id/
+│   │   ├── cve_correlation.py   # fingerprinted versions → NVD CVE lookup
+│   │   ├── tls_analyzer.py      # protocol/cipher/cert inspection, no exploit payloads
+│   │   ├── http_posture.py      # headers, cookies, CORS
+│   │   ├── default_credentials.py  # curated spot-check, single attempt per pair, opt-in only
+│   │   └── aggregate.py         # CVSS scoring guarantee + target/severity grouping
+│   └── active/                  # requires authorization.yml's 'active' category + --confirm
+│       ├── canary.py            # local-only callback listener for SSRF detection
+│       ├── sqli.py              # error-based detection, bounded probes, never extracts data
+│       ├── xss.py                # unique-marker reflection check, no execution step
+│       ├── open_redirect.py      # Location-header check only, never follows the redirect
+│       ├── ssrf.py               # canary confirmation, never pivots through a confirmed SSRF
+│       └── path_traversal.py     # minimal-evidence confirmation, not bulk exfiltration
 ├── tests/
-│   ├── fixtures/mock_target/    # local-only mock HTTP target for CI (never real targets)
-│   └── test_redteam_toolkit.py
+│   ├── fixtures/
+│   │   ├── mock_target/         # local-only mock HTTP target — vulnerable/safe endpoint pairs
+│   │   └── tls_server.py        # real self-signed cert generation for TLS analyzer tests
+│   ├── recon/
+│   ├── vuln_id/
+│   ├── active/
+│   └── test_redteam_toolkit.py  # Sprint 0 foundation tests
 ├── docs/
 │   ├── legal-and-ethics.md
-│   └── methodology.md
+│   ├── methodology.md
+│   └── cvss-rubric.md
 └── .github/workflows/ci.yml
 ```
 
 ---
 
 ## Changelog
+
+### v0.4.0 — Sprint 3: Active Detection
+- feat: **active-tier confirmation gate** (`Engagement.confirm_active_tier()`) — on top of
+  `'active'` being in `authorization.yml`'s `allowed_categories`, every CLI session must type the
+  exact engagement ID via `--confirm` before any active-tier module can run. This can't be
+  scripted around with a single boolean flag the way `--yes-i-am-sure` could be. Both refusal
+  paths (category absent, ID mismatch) are logged with equal visibility to a success.
+- feat: `sqli_detection` — error-based SQL injection detection, bounded probes per parameter,
+  stops as soon as one probe confirms — never extracts data or enumerates schema
+- feat: `xss_detection` — unique-marker reflected XSS detection, no execution step (no headless
+  browser, ever)
+- feat: `open_redirect_detection` — Location-header inspection only, never actually follows the
+  externally-supplied redirect target
+- feat: `ssrf_detection` — canary/callback confirmation via a new local-only `LocalCanaryListener`
+  (never an external canary service), never pivots through a confirmed SSRF to reach further
+  internal infrastructure
+- feat: `path_traversal_detection` — confirms via a minimal, recognisable signature (`/etc/passwd`'s
+  first line) rather than exfiltrating arbitrary file contents
+- feat: CLI `active` command — requires `--confirm <engagement_id>` every invocation
+- feat: mock target harness extended with vulnerable/safe endpoint pairs for SQLi, path traversal,
+  and SSRF (XSS/open-redirect reuse Sprint 0's existing reflect/redirect pairs); the server is now
+  threaded so the SSRF-vulnerable endpoint's real server-side self-fetch doesn't deadlock against a
+  single-threaded accept loop
+- test: 46 tests under `tests/active/` — the gate's negative-path tests are the priority (category
+  absent, ID mismatch, bypassing `confirm_active_tier()` entirely, confirmation not bypassing
+  scope/window, recon/vuln-id unaffected by active confirmation state), plus every detection module
+  tested against both the vulnerable and safe mock-target variant with an explicit, asserted
+  request-count ceiling for each
 
 ### v0.3.0 — Sprint 2: Vulnerability Identification
 - feat: `cve_correlation` — fingerprinted service versions → NVD CVE lookup, CVSS-mapped severity

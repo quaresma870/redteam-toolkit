@@ -22,10 +22,21 @@ class ScopeViolation(PermissionError):
     scope, time window, or allowed categories. Always logged before raising."""
 
 
+class ActiveTierNotConfirmed(ScopeViolation):
+    """Raised when an active-tier module is invoked without the in-the-moment
+    engagement-ID confirmation, even if 'active' is an authorized category.
+    Being in scope for the category is not the same as having confirmed
+    intent to run this specific, higher-risk tier right now."""
+
+
 class Engagement:
     def __init__(self, authorization: Authorization, audit_log_path: str | Path):
         self.authorization = authorization
         self.audit_log = AuditLog(audit_log_path)
+        # Active-tier modules require an additional, in-the-moment
+        # confirmation on top of 'active' being in allowed_categories —
+        # see confirm_active_tier(). Resets every process; never persisted.
+        self._active_tier_confirmed = False
 
     @classmethod
     def load(
@@ -35,6 +46,50 @@ class Engagement:
         if audit_log_path is None:
             audit_log_path = Path(authorization_path).parent / f"{auth.engagement_id}.audit.jsonl"
         return cls(auth, audit_log_path)
+
+    def confirm_active_tier(self, typed_engagement_id: str) -> None:
+        """Required once per session before any active-tier module can run.
+        Deliberately takes the literal engagement ID as a typed argument,
+        not a boolean flag — this can't be scripted around with a single
+        switch the way --yes-i-am-sure could be copy-pasted into a script
+        without ever being read.
+        """
+        if "active" not in self.authorization.scope.allowed_categories:
+            self.audit_log.record(
+                engagement_id=self.authorization.engagement_id,
+                module="engagement",
+                target="-",
+                action="active_tier_confirmation",
+                allowed=False,
+                detail={"reason": "'active' is not in this authorization's allowed_categories"},
+            )
+            raise ActiveTierNotConfirmed(
+                "Refused: 'active' is not in this authorization's allowed_categories."
+            )
+
+        if typed_engagement_id != self.authorization.engagement_id:
+            self.audit_log.record(
+                engagement_id=self.authorization.engagement_id,
+                module="engagement",
+                target="-",
+                action="active_tier_confirmation",
+                allowed=False,
+                detail={"reason": "typed engagement ID did not match"},
+            )
+            raise ActiveTierNotConfirmed(
+                "Refused: typed engagement ID does not match this authorization. "
+                "Active-tier modules remain unconfirmed."
+            )
+
+        self._active_tier_confirmed = True
+        self.audit_log.record(
+            engagement_id=self.authorization.engagement_id,
+            module="engagement",
+            target="-",
+            action="active_tier_confirmation",
+            allowed=True,
+            detail={},
+        )
 
     def authorize_action(
         self, module: str, target: str, action: str, category: str | None = None
@@ -57,6 +112,9 @@ class Engagement:
         elif category and not self.authorization.allows_category(category):
             allowed = False
             reason = f"category '{category}' not in allowed_categories"
+        elif category == "active" and not self._active_tier_confirmed:
+            allowed = False
+            reason = "active-tier not confirmed for this session — call confirm_active_tier() first"
 
         detail = {"category": category} if allowed else {"category": category, "reason": reason}
         self.audit_log.record(
