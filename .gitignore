@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+.ruff_cache/
+build/
+dist/
+
+# Real authorization files and audit logs must never be committed —
+# they may contain client-identifying scope details. Templates (*.example)
+# and the docs/sample-engagements/ templates are fine.
+authorization.yml
+*.audit.jsonl

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "redteam-toolkit"
+version = "0.1.0"
+description = "Authorized penetration testing toolkit — mandatory scope enforcement, tamper-evident audit logging"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "quaresma870" }]
+keywords = ["security", "pentest", "redteam", "authorized-testing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/quaresma870/redteam-toolkit"
+Repository = "https://github.com/quaresma870/redteam-toolkit"
+Issues = "https://github.com/quaresma870/redteam-toolkit/issues"
+
+[project.scripts]
+redteam-toolkit = "redteam_toolkit.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2.0", "ruff>=0.4.0"]
+
+[tool.setuptools.packages.find]
+include = ["redteam_toolkit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
