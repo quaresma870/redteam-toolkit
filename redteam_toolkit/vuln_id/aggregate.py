@@ -1,34 +1,19 @@
 """
-Vuln-id aggregation — groups findings by target and severity, and
-guarantees every finding has a CVSS score (either supplied directly by the
-producing module, e.g. cve_correlation's NVD-sourced score, or assigned via
-the internal rubric documented in docs/cvss-rubric.md).
+Vuln-id aggregation — groups findings by target and severity.
+
+CVSS scoring itself now lives in core/cvss.py since it applies across
+every module category (recon, vuln-id, active), not just vuln-id —
+re-exported here for backward compatibility with existing imports.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
 
-from redteam_toolkit.core.models import Finding, ModuleResult, Severity
+from redteam_toolkit.core.cvss import INTERNAL_RUBRIC, ensure_cvss_score
+from redteam_toolkit.core.models import ModuleResult
 
-# Representative CVSS score per severity band — used only for findings that
-# don't already carry a score from a published CVE record. See
-# docs/cvss-rubric.md for the full rationale.
-INTERNAL_RUBRIC: dict[Severity, float] = {
-    Severity.CRITICAL: 9.5,
-    Severity.HIGH: 7.5,
-    Severity.MEDIUM: 5.5,
-    Severity.LOW: 3.0,
-    Severity.INFO: 0.0,
-}
-
-
-def ensure_cvss_score(finding: Finding) -> Finding:
-    """Assigns a score from the internal rubric if the finding doesn't
-    already carry one. Mutates and returns the same Finding."""
-    if finding.cvss_score is None:
-        finding.cvss_score = INTERNAL_RUBRIC.get(finding.severity, 0.0)
-    return finding
+__all__ = ["INTERNAL_RUBRIC", "ensure_cvss_score", "aggregate"]
 
 
 def aggregate(module_results: list[ModuleResult]) -> dict:
