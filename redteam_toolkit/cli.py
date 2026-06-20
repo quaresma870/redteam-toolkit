@@ -275,6 +275,87 @@ def recon(target, authorization, audit_log, modules, aggressive):
         console.print("\n[dim]No findings.[/dim]")
 
 
+@cli.command(name="vuln-id")
+@click.argument("target")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated modules to run (default: all vuln-id modules except default_credentials)")
+@click.option("--check-default-creds", is_flag=True,
+              help="Opt in to the default-credential spot-check — off by default even if requested via --modules.")
+@click.option("--tls-port", default=443, show_default=True, help="Port to use for the TLS analyzer.")
+def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_port):
+    """Run vulnerability identification modules against TARGET. Read-only —
+    no exploitation, no credential brute-forcing.
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.engagement import Engagement
+    from redteam_toolkit.vuln_id.aggregate import ensure_cvss_score
+    from redteam_toolkit.vuln_id.cve_correlation import CVECorrelationModule
+    from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
+    from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
+    from redteam_toolkit.vuln_id.tls_analyzer import TLSAnalyzerModule
+
+    try:
+        eng = Engagement.load(authorization, audit_log)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    available = {
+        "cve_correlation": lambda: CVECorrelationModule(eng),
+        "tls_analyzer": lambda: TLSAnalyzerModule(eng, port=tls_port),
+        "http_posture": lambda: HTTPPostureModule(eng),
+        "default_credentials": lambda: DefaultCredentialModule(eng),
+    }
+
+    # default_credentials is never included unless explicitly named — being
+    # 'vuln-id' authorized is not the same as opting into this specific check.
+    default_selection = [n for n in available if n != "default_credentials"]
+    selected = [m.strip() for m in modules.split(",")] if modules else default_selection
+
+    console.print()
+    console.rule(f"[bold cyan]🔍 Vulnerability identification: {target}[/bold cyan]")
+    console.print()
+
+    all_findings = []
+    for name in selected:
+        if name not in available:
+            console.print(f"[red]Unknown module: {name}[/red]")
+            continue
+        module = available[name]()
+        if name == "default_credentials":
+            result = module.run(target, opt_in=check_default_creds)
+        else:
+            result = module.run(target)
+
+        if result.error:
+            console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
+        else:
+            console.print(
+                f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
+                f"({result.duration_ms:.0f}ms)"
+            )
+        for f in result.findings:
+            ensure_cvss_score(f)
+        all_findings.extend(result.findings)
+
+    if all_findings:
+        t = Table(box=box.SIMPLE_HEAD, show_lines=True)
+        t.add_column("Module")
+        t.add_column("Title", overflow="fold")
+        t.add_column("Severity")
+        t.add_column("CVSS", justify="right")
+        for f in all_findings:
+            t.add_row(f.module, f.title, f.severity.value, f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—")
+        console.print()
+        console.print(t)
+    else:
+        console.print("\n[dim]No findings.[/dim]")
+
+
 def main():
     cli()
 
