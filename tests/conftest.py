@@ -51,6 +51,21 @@ def engagement_factory():
 
 
 @pytest.fixture
+def active_engagement_factory(engagement_factory):
+    """Like engagement_factory, but pre-confirms the active tier (category
+    'active' + the matching engagement_id 'test') — convenience for tests
+    that are about the detection modules themselves, not the gate. Gate
+    behaviour itself is tested separately, unconfirmed, in test_engagement_gate.py.
+    """
+    def _make(**kwargs):
+        kwargs.setdefault("allowed_categories", ["active"])
+        eng = engagement_factory(**kwargs)
+        eng.confirm_active_tier("test")
+        return eng
+    return _make
+
+
+@pytest.fixture
 def mock_target():
     """Starts the local-only mock target server for the duration of a test."""
     from tests.fixtures.mock_target.server import start_mock_target

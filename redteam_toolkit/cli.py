@@ -356,6 +356,94 @@ def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_
         console.print("\n[dim]No findings.[/dim]")
 
 
+@cli.command()
+@click.argument("target")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated modules to run (default: all active-tier modules)")
+@click.option("--confirm", required=True,
+              help="Type the exact engagement_id from authorization.yml to confirm intent "
+                   "to run active-tier checks. Required every invocation — not a boolean flag.")
+@click.option("--canary-host", default="127.0.0.1", show_default=True,
+              help="Host to bind the local SSRF canary listener to.")
+def active(target, authorization, audit_log, modules, confirm, canary_host):
+    """Run active-tier detection modules against TARGET.
+
+    Non-destructive confirmation only — never exploitation. Requires
+    'active' in authorization.yml's allowed_categories AND typing the exact
+    engagement ID via --confirm, every time this command runs.
+    """
+    from redteam_toolkit.active.canary import LocalCanaryListener
+    from redteam_toolkit.active.open_redirect import OpenRedirectModule
+    from redteam_toolkit.active.path_traversal import PathTraversalModule
+    from redteam_toolkit.active.sqli import SQLInjectionModule
+    from redteam_toolkit.active.ssrf import SSRFDetectionModule
+    from redteam_toolkit.active.xss import XSSDetectionModule
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.engagement import Engagement, ScopeViolation
+
+    try:
+        eng = Engagement.load(authorization, audit_log)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    try:
+        eng.confirm_active_tier(confirm)
+    except ScopeViolation as exc:
+        console.print(f"[red]✘ Active-tier not confirmed:[/red] {exc}")
+        sys.exit(1)
+
+    console.print("[green]✔[/green] Active-tier confirmed for this session.\n")
+
+    canary = LocalCanaryListener(host=canary_host)
+    try:
+        available = {
+            "sqli_detection": lambda: SQLInjectionModule(eng),
+            "xss_detection": lambda: XSSDetectionModule(eng),
+            "open_redirect_detection": lambda: OpenRedirectModule(eng),
+            "ssrf_detection": lambda: SSRFDetectionModule(eng, canary_listener=canary),
+            "path_traversal_detection": lambda: PathTraversalModule(eng),
+        }
+        selected = [m.strip() for m in modules.split(",")] if modules else list(available.keys())
+
+        console.print()
+        console.rule(f"[bold red]⚡ Active detection: {target}[/bold red]")
+        console.print()
+
+        all_findings = []
+        for name in selected:
+            if name not in available:
+                console.print(f"[red]Unknown module: {name}[/red]")
+                continue
+            result = available[name]().run(target)
+            if result.error:
+                console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
+            else:
+                console.print(
+                    f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
+                    f"({result.duration_ms:.0f}ms)"
+                )
+            all_findings.extend(result.findings)
+
+        if all_findings:
+            t = Table(box=box.SIMPLE_HEAD, show_lines=True)
+            t.add_column("Module")
+            t.add_column("Title", overflow="fold")
+            t.add_column("Severity")
+            for f in all_findings:
+                t.add_row(f.module, f.title, f.severity.value)
+            console.print()
+            console.print(t)
+        else:
+            console.print("\n[dim]No findings.[/dim]")
+    finally:
+        canary.shutdown()
+
+
 def main():
     cli()
 
