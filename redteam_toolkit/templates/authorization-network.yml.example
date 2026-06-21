@@ -1,0 +1,45 @@
+# redteam-toolkit authorization — NETWORK ASSESSMENT engagement template.
+#
+# Typical for: an internal or external network range, focused on
+# discovering live hosts/services and identifying known vulnerabilities —
+# usually without web-application-specific active testing.
+#
+# Every field below still requires manual completion. Nothing here is
+# pre-filled with a real target, date, or confirmation phrase — fill in
+# every blank, get the client's written sign-off, then run
+# 'redteam-toolkit validate-scope'.
+
+engagement_id: ""              # e.g. "acme-network-2026-q2"
+authorized_by: ""
+authorized_contact_email: ""
+client: ""
+
+scope:
+  targets: []
+  # Typical network-assessment scope entries:
+  #   - "198.51.100.0/24"       # external range
+  #   - "10.20.0.0/16"          # internal range, if testing from inside the network
+  excluded_targets: []
+  # Common exclusion: a specific host known to be fragile or out of scope:
+  #   - "198.51.100.50"         # e.g. a legacy device the client asked to be carved out
+
+  allowed_categories: []
+  # Network assessments typically authorize recon + vuln-id only —
+  # active-tier checks (SQLi/XSS/etc) target web applications specifically
+  # and usually aren't relevant to a pure network sweep:
+  #   - recon
+  #   - vuln-id
+
+window:
+  start: ""
+  end: ""                      # network sweeps across large ranges may need a longer window —
+                                # the rate budget below limits how fast scanning can go regardless
+
+confirmation_phrase: ""
+
+# Network ranges can be large — consider a higher total request budget than
+# the 5000/session default, but keep max_per_second conservative to avoid
+# tripping IDS/IPS or overwhelming smaller network segments.
+# rate_limits:
+#   max_total_requests: 20000
+#   max_per_second: 50

@@ -44,17 +44,42 @@ Before your first real engagement, read:
 
 This project is being built in public, sprint by sprint — see
 [milestones](https://github.com/quaresma870/redteam-toolkit/milestones) for
-the full roadmap. **Sprints 0-4 are complete**: authorization/scope
+the full roadmap. **All 6 sprints are complete**: authorization/scope
 enforcement, reconnaissance, vulnerability identification, non-destructive
-active detection, and full engagement reporting (HTML, PDF, dashboard).
-Production hardening and distribution (Sprint 5) is not done yet.
+active detection, full engagement reporting, and production hardening
+(global rate budget, expanded methodology/legal docs, engagement-type
+templates, PyPI publish workflow, Homebrew tap).
 
 ---
 
-## Quickstart (Sprint 0 — foundation)
+## Installation
+
+```bash
+# From PyPI (once published — see CHANGELOG.md for release status)
+pip install redteam-toolkit
+
+# Optional dashboard support
+pip install redteam-toolkit[dashboard]
+
+# Via Homebrew (macOS)
+brew tap quaresma870/redteam-toolkit
+brew install redteam-toolkit
+
+# From source, for development
+git clone https://github.com/quaresma870/redteam-toolkit
+cd redteam-toolkit
+pip install -r requirements.txt
+```
+
+## Quickstart
 
 ```bash
 pip install -r requirements.txt
+
+# 0. Start from an engagement-type template (optional) — still requires
+#    filling in every scope/date/confirmation field by hand
+PYTHONPATH=. python -m redteam_toolkit.cli init --template web-app
+# other templates: network, internal-redteam
 
 # 1. Create a template — every field still requires manual completion
 PYTHONPATH=. python -m redteam_toolkit.cli init
@@ -150,9 +175,10 @@ redteam-toolkit/
 │   │   ├── engagement.py        # Engagement — scope gate + active-tier confirmation gate
 │   │   ├── models.py            # Finding, ModuleResult, EngagementReport
 │   │   ├── netutil.py           # bare-host extraction for scope checks on URL-style targets
-│   │   ├── rate_limit.py        # shared rate limiter for high-volume modules
+│   │   ├── rate_limit.py        # RateLimiter + GlobalRateBudget — hard session-wide ceiling
 │   │   ├── cvss.py              # project-wide CVSS scoring rubric
 │   │   └── history.py           # SQLite persistence of module results, keyed by engagement_id
+│   ├── templates/                # engagement-type authorization.yml templates (init --template)
 │   ├── reports/
 │   │   ├── build.py             # assembles a full EngagementReport from authorization + history
 │   │   ├── html.py              # self-contained HTML report (zero external requests)

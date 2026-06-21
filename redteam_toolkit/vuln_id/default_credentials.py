@@ -47,7 +47,7 @@ class DefaultCredentialModule(BaseReconModule):
 
     def __init__(self, engagement, try_login_fn=None, rate_per_second: float = SAFE_RATE_PER_SECOND):
         super().__init__(engagement)
-        self.rate_limiter = RateLimiter(rate_per_second)
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self._try_login = try_login_fn or self._default_try_login
         self.attempt_count = 0  # exposed for tests to assert the request-count ceiling
 

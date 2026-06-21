@@ -3,6 +3,50 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.6.0 — Sprint 5: Production Hardening & Distribution
+- feat: **global rate budget** (`core/rate_limit.GlobalRateBudget`) — a hard, session-wide request
+  ceiling that no module can exceed regardless of internal bugs, on top of each module's own
+  per-second pacing. Wired into every module that loops over parameters/wordlists
+  (`port_scanner`, `active_dns`, `endpoint_discovery`, `default_credentials`, and — newly rate-
+  limited for the first time — `sqli_detection`, `xss_detection`, `open_redirect_detection`,
+  `ssrf_detection`, `path_traversal_detection`). Configurable via `authorization.yml`'s optional
+  `rate_limits` section, defaults to 5000 requests/session at 100/sec. Visible in `status` output.
+  Verified with a simulated runaway module (1000 fake parameters against a 10-request ceiling) —
+  stopped at exactly 10, not 1000.
+- feat: `docs/methodology.md` expanded with full PTES phase mapping and OWASP WSTG category
+  mapping, a step-by-step engagement walkthrough, and an explicit list of what's deliberately not
+  automated (threat modeling, business logic testing, manual finding verification).
+- feat: `docs/legal-and-ethics.md` expanded — what "authorization" needs to actually look like,
+  jurisdiction-illustrative statutes, the active-tier confirmation's rationale, guidance for
+  testing your own systems (cloud shared-responsibility boundaries, production availability risk),
+  and what the audit log does and doesn't prove.
+- feat: `redteam_toolkit/templates/` — three engagement-type authorization templates (web-app,
+  network, internal-redteam), each reducing boilerplate while still requiring every
+  scope/date/confirmation-phrase field to be filled in by hand. `init --template <type>` writes
+  one; bundled in the wheel via `package-data` and verified present in a real build, not just
+  assumed.
+- feat: `.github/workflows/publish.yml` — PyPI trusted publishing (OIDC, no stored token) on
+  `v*.*.*` tags, with a tag-vs-pyproject.toml version check and a check that all three template
+  files actually made it into the built wheel before publishing.
+- feat: end-to-end smoke test CI job — runs `init --template` → fill in → `validate-scope` →
+  `status` → `recon --db` → `active --db` (against the real mock target's known-vulnerable SQLi
+  endpoint) → `report --format both`, asserting the SQLi finding appears in both the CLI output
+  and the generated HTML report, and that the PDF has a valid header. One connected flow, not
+  isolated unit tests.
+- feat: `homebrew-redteam-toolkit` tap — `Formula/redteam-toolkit.rb` with real sha256 hashes
+  fetched from PyPI's JSON API for every dependency (including `cryptography`, which needs
+  `depends_on "rust" => :build` since its current release only ships arm64 macOS wheels, not a
+  universal one — confirmed by checking PyPI's actual wheel list, not assumed); `bin/update-formula.sh`
+  for post-release hash updates. Formula syntax checked with `ruby -c`; honestly documented as
+  **not yet verified via a real `brew install`** since no macOS/Homebrew environment exists in
+  this project's development setup.
+- test: 31 new tests — `GlobalRateBudget` ceiling enforcement (including a concurrent-access test
+  confirming the ceiling holds exactly under threading, never overshoots), `RateLimiter`
+  integration with the global budget, `authorization.yml`'s `rate_limits` parsing, every
+  `init --template` variant (writes correctly, never pre-fills scope/dates/confirmation, validates
+  against the real schema once filled in, commented-out rate-limit examples don't silently
+  activate), and `status` command output.
+
 ### v0.5.0 — Sprint 4: Reporting
 - feat: `core/history.py` — SQLite persistence keyed by `engagement_id`, so module results from
   separate `recon`/`vuln-id`/`active` CLI invocations (across an entire engagement) combine into

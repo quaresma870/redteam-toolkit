@@ -1,0 +1,45 @@
+# redteam-toolkit authorization — WEB APPLICATION engagement template.
+#
+# Typical for: a single web application or a small set of related
+# subdomains, with full-stack coverage (recon → vuln-id → active).
+#
+# Every field below still requires manual completion. Nothing here is
+# pre-filled with a real target, date, or confirmation phrase — fill in
+# every blank, get the client's written sign-off, then run
+# 'redteam-toolkit validate-scope'.
+
+engagement_id: ""              # e.g. "acme-webapp-2026-q2"
+authorized_by: ""              # full name + title of the person who approved this
+authorized_contact_email: ""
+client: ""                     # organisation being tested
+
+scope:
+  targets: []
+  # Typical web-app scope entries:
+  #   - "app.example.com"
+  #   - "*.staging.example.com"
+  #   - "203.0.113.10"          # if testing against a fixed IP instead of a domain
+  excluded_targets: []
+  # Common exclusion: production, if only staging was authorized:
+  #   - "app.example.com"       # carve out prod even if *.example.com matched above
+
+  allowed_categories: []
+  # A full web-app pentest typically authorizes all three:
+  #   - recon
+  #   - vuln-id
+  #   - active
+  # 'active' additionally requires --confirm <engagement_id> at run time
+  # for every invocation, even once authorized here.
+
+window:
+  start: ""                    # ISO 8601, e.g. "2026-07-01T00:00:00Z"
+  end: ""                      # must be after start — typical web-app engagements run 1-2 weeks
+
+confirmation_phrase: ""        # e.g. "I confirm authorization for acme-webapp-2026-q2"
+
+# Optional — overrides the default global rate budget (5000 requests/session,
+# 100/sec). Web apps on shared/rate-limited infrastructure may want a lower
+# ceiling than the default.
+# rate_limits:
+#   max_total_requests: 3000
+#   max_per_second: 20
