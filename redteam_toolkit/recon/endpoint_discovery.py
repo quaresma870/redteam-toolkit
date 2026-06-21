@@ -50,7 +50,7 @@ class EndpointDiscoveryModule(BaseReconModule):
         respect_robots: bool = True,
     ):
         super().__init__(engagement)
-        self.rate_limiter = RateLimiter(rate_per_second)
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self.respect_robots = respect_robots
         self._fetch = fetch_fn or self._default_fetch
 

@@ -15,10 +15,12 @@ import urllib.request
 
 from redteam_toolkit.core.models import Finding, FindingCategory, Severity
 from redteam_toolkit.core.netutil import extract_host
+from redteam_toolkit.core.rate_limit import RateLimiter
 from redteam_toolkit.recon.base import BaseReconModule
 
 DEFAULT_PARAMS = ["id"]
 MAX_PROBES_PER_PARAM = 4
+RATE_PER_SECOND = 5.0  # stricter than recon/vuln-id defaults — active-tier probing
 
 _ERROR_PROBES = ["'", "\"", "' OR '1'='1", "1' AND '1'='1"]
 
@@ -34,10 +36,11 @@ class SQLInjectionModule(BaseReconModule):
     name = "sqli_detection"
     category = "active"
 
-    def __init__(self, engagement, fetch_fn=None, timeout: float = 5.0):
+    def __init__(self, engagement, fetch_fn=None, timeout: float = 5.0, rate_per_second: float = RATE_PER_SECOND):
         super().__init__(engagement)
         self.timeout = timeout
         self._fetch = fetch_fn or self._default_fetch
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self.probe_count = 0  # exposed for tests to assert the request-count ceiling
 
     def scan(self, target: str, params: list[str] | None = None) -> list[Finding]:
@@ -49,6 +52,7 @@ class SQLInjectionModule(BaseReconModule):
 
         for param in params:
             for probe in _ERROR_PROBES[:MAX_PROBES_PER_PARAM]:
+                self.rate_limiter.wait()
                 self.probe_count += 1
                 body = self._fetch(target, param, probe)
                 if self._has_sql_error(body):

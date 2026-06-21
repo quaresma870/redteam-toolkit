@@ -15,10 +15,12 @@ import urllib.request
 
 from redteam_toolkit.core.models import Finding, FindingCategory, Severity
 from redteam_toolkit.core.netutil import extract_host
+from redteam_toolkit.core.rate_limit import RateLimiter
 from redteam_toolkit.recon.base import BaseReconModule
 
 DEFAULT_PARAMS = ["url", "webhook", "callback", "image", "avatar", "fetch"]
 DEFAULT_WAIT_SECONDS = 2.0
+RATE_PER_SECOND = 5.0
 
 
 class SSRFDetectionModule(BaseReconModule):
@@ -32,6 +34,7 @@ class SSRFDetectionModule(BaseReconModule):
         fetch_fn=None,
         timeout: float = 5.0,
         wait_seconds: float = DEFAULT_WAIT_SECONDS,
+        rate_per_second: float = RATE_PER_SECOND,
     ):
         super().__init__(engagement)
         self.timeout = timeout
@@ -42,6 +45,7 @@ class SSRFDetectionModule(BaseReconModule):
         # CI-safe implementation. Never an external canary service in tests.
         self._canary = canary_listener
         self.probe_count = 0
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
 
     def scan(self, target: str, params: list[str] | None = None) -> list[Finding]:
         host = extract_host(target)
@@ -63,6 +67,7 @@ class SSRFDetectionModule(BaseReconModule):
         for param in params:
             token = secrets.token_hex(8)
             canary_url = self._canary.generate_url(token)
+            self.rate_limiter.wait()
             self.probe_count += 1
             self._fetch(target, param, canary_url)
             time.sleep(self.wait_seconds)

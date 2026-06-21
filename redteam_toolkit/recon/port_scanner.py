@@ -30,7 +30,7 @@ class PortScannerModule(BaseReconModule):
         connect_fn=None,
     ):
         super().__init__(engagement)
-        self.rate_limiter = RateLimiter(rate_per_second)
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self.timeout = timeout
         # Injectable for testing — defaults to a real TCP connect attempt.
         self._connect = connect_fn or self._default_connect

@@ -13,21 +13,24 @@ from urllib.parse import urlparse
 
 from redteam_toolkit.core.models import Finding, FindingCategory, Severity
 from redteam_toolkit.core.netutil import extract_host
+from redteam_toolkit.core.rate_limit import RateLimiter
 from redteam_toolkit.recon.base import BaseReconModule
 
 DEFAULT_PARAMS = ["url", "next", "redirect", "return", "dest", "continue"]
 CANARY_TARGET = "https://redteam-toolkit-canary.invalid/open-redirect-check"
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+RATE_PER_SECOND = 5.0
 
 
 class OpenRedirectModule(BaseReconModule):
     name = "open_redirect_detection"
     category = "active"
 
-    def __init__(self, engagement, fetch_fn=None, timeout: float = 5.0):
+    def __init__(self, engagement, fetch_fn=None, timeout: float = 5.0, rate_per_second: float = RATE_PER_SECOND):
         super().__init__(engagement)
         self.timeout = timeout
         self._fetch = fetch_fn or self._default_fetch
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self.probe_count = 0
 
     def scan(self, target: str, params: list[str] | None = None) -> list[Finding]:
@@ -38,6 +41,7 @@ class OpenRedirectModule(BaseReconModule):
         findings = []
 
         for param in params:
+            self.rate_limiter.wait()
             self.probe_count += 1
             status, location = self._fetch(target, param, CANARY_TARGET)
             if status in _REDIRECT_STATUSES and location == CANARY_TARGET:

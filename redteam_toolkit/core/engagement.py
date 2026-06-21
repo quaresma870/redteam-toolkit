@@ -38,6 +38,18 @@ class Engagement:
         # see confirm_active_tier(). Resets every process; never persisted.
         self._active_tier_confirmed = False
 
+        from redteam_toolkit.core.rate_limit import (
+            DEFAULT_MAX_PER_SECOND,
+            DEFAULT_MAX_TOTAL_REQUESTS,
+            GlobalRateBudget,
+        )
+
+        rl = authorization.rate_limits
+        self.rate_budget = GlobalRateBudget(
+            max_total_requests=rl.max_total_requests if rl else DEFAULT_MAX_TOTAL_REQUESTS,
+            max_per_second=rl.max_per_second if rl else DEFAULT_MAX_PER_SECOND,
+        )
+
     @classmethod
     def load(
         cls, authorization_path: str | Path, audit_log_path: str | Path | None = None

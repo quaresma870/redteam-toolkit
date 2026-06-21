@@ -80,11 +80,23 @@ def cli():
     """
 
 
+_TEMPLATE_CHOICES = ["web-app", "network", "internal-redteam"]
+_TEMPLATE_FILENAMES = {
+    "web-app": "authorization-web-app.yml.example",
+    "network": "authorization-network.yml.example",
+    "internal-redteam": "authorization-internal-redteam.yml.example",
+}
+
+
 @cli.command()
 @click.option("--output", "-o", default="authorization.yml", show_default=True,
               help="Path to write the authorization template.")
 @click.option("--force", is_flag=True, help="Overwrite an existing file.")
-def init(output, force):
+@click.option("--template", type=click.Choice(_TEMPLATE_CHOICES), default=None,
+              help="Start from an engagement-type template (web-app, network, internal-redteam) "
+                   "instead of the generic one. Still requires manual completion — no template "
+                   "pre-fills scope, dates, or the confirmation phrase.")
+def init(output, force, template):
     """Create an authorization.yml template.
 
     Every field still requires manual completion — this never auto-fills
@@ -95,8 +107,17 @@ def init(output, force):
         console.print(f"[red]{path} already exists.[/red] Use --force to overwrite.")
         sys.exit(1)
 
-    path.write_text(_TEMPLATE, encoding="utf-8")
-    console.print(f"[green]✔[/green] Template written: [bold]{path}[/bold]")
+    if template:
+        import importlib.resources
+        filename = _TEMPLATE_FILENAMES[template]
+        content = importlib.resources.files("redteam_toolkit.templates").joinpath(filename).read_text()
+        label = f" ({template} template)"
+    else:
+        content = _TEMPLATE
+        label = ""
+
+    path.write_text(content, encoding="utf-8")
+    console.print(f"[green]✔[/green] Template written{label}: [bold]{path}[/bold]")
     console.print(
         "\n[yellow]This file does not authorize anything yet.[/yellow] "
         "Fill in every field, get explicit sign-off from the target owner, then run:\n"
@@ -183,6 +204,15 @@ def status(authorization, audit_log):
         f"{len(auth.scope.excluded_targets)} exclusion(s)"
     )
     console.print(f"Categories: {', '.join(auth.scope.allowed_categories) or 'none'}")
+
+    from redteam_toolkit.core.rate_limit import DEFAULT_MAX_PER_SECOND, DEFAULT_MAX_TOTAL_REQUESTS
+    rl = auth.rate_limits
+    max_total = rl.max_total_requests if rl else DEFAULT_MAX_TOTAL_REQUESTS
+    max_per_sec = rl.max_per_second if rl else DEFAULT_MAX_PER_SECOND
+    source = "configured in authorization.yml" if rl else "default"
+    console.print(
+        f"Rate budget: {max_total} request(s)/session, {max_per_sec}/sec ceiling ({source})"
+    )
 
     if log_path.exists():
         valid, broken_line = verify_log_integrity(log_path)

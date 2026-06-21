@@ -36,6 +36,15 @@ class Window:
 
 
 @dataclass
+class RateLimits:
+    """Optional override of the global rate budget defaults. Configured
+    under authorization.yml's 'rate_limits' key — absent means the
+    defaults in core/rate_limit.py apply."""
+    max_total_requests: int
+    max_per_second: float
+
+
+@dataclass
 class Authorization:
     engagement_id: str
     authorized_by: str
@@ -44,6 +53,7 @@ class Authorization:
     scope: Scope
     window: Window
     confirmation_phrase: str
+    rate_limits: RateLimits | None = None
     source_path: Path | None = None
 
     def is_within_window(self, now: datetime | None = None) -> bool:
@@ -135,6 +145,21 @@ def load_authorization(path: str | Path) -> Authorization:
         allowed_categories=list(scope_data.get("allowed_categories") or []),
     )
 
+    rate_limits = None
+    rate_data = data.get("rate_limits")
+    if rate_data:
+        if not isinstance(rate_data, dict):
+            raise AuthorizationError("'rate_limits' must be a mapping with 'max_total_requests'/'max_per_second'.")
+        try:
+            rate_limits = RateLimits(
+                max_total_requests=int(rate_data["max_total_requests"]),
+                max_per_second=float(rate_data["max_per_second"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise AuthorizationError(
+                f"'rate_limits' must include numeric 'max_total_requests' and 'max_per_second': {exc}"
+            ) from exc
+
     return Authorization(
         engagement_id=str(data["engagement_id"]),
         authorized_by=str(data["authorized_by"]),
@@ -143,6 +168,7 @@ def load_authorization(path: str | Path) -> Authorization:
         scope=scope,
         window=Window(start=start, end=end),
         confirmation_phrase=str(data["confirmation_phrase"]),
+        rate_limits=rate_limits,
         source_path=path,
     )
 

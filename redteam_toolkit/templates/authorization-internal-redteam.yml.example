@@ -1,0 +1,55 @@
+# redteam-toolkit authorization — INTERNAL RED TEAM engagement template.
+#
+# Typical for: an internal security team running this toolkit against its
+# own organisation's infrastructure, often with broader scope and longer
+# duration than an external client engagement.
+#
+# Internal does NOT mean unauthorized-by-default. Get explicit, written
+# sign-off from whoever actually owns risk decisions for the in-scope
+# systems (CISO, infrastructure owner, etc.) — "I work here" is not the
+# same as "I have authorization to test this."
+#
+# Every field below still requires manual completion. Nothing here is
+# pre-filled with a real target, date, or confirmation phrase — fill in
+# every blank, get written sign-off, then run 'redteam-toolkit validate-scope'.
+
+engagement_id: ""              # e.g. "internal-redteam-2026-h2"
+authorized_by: ""              # CISO or equivalent — not the tester's own manager alone
+authorized_contact_email: ""
+client: ""                     # your own organisation's name
+
+scope:
+  targets: []
+  # Internal red team scope is often broader — multiple ranges/domains:
+  #   - "10.0.0.0/8"
+  #   - "*.internal.example.com"
+  #   - "staging.example.com"
+  excluded_targets: []
+  # Internal engagements especially benefit from explicit exclusions —
+  # carve out anything genuinely critical (payroll systems, production
+  # databases, safety-critical infrastructure) even if it matches a broad
+  # CIDR range above:
+  #   - "payroll.internal.example.com"
+  #   - "10.0.5.0/24"           # e.g. a production database subnet
+
+  allowed_categories: []
+  # Internal red teams often have the broadest mandate, but still decide
+  # deliberately rather than defaulting to everything:
+  #   - recon
+  #   - vuln-id
+  #   - active
+
+window:
+  start: ""
+  end: ""                      # internal engagements sometimes run longer (a full quarter) —
+                                # the toolkit's window check applies for the whole duration either way
+
+confirmation_phrase: ""
+
+# Internal engagements often run against more infrastructure for longer —
+# review whether the defaults (5000 requests/session, 100/sec) fit your
+# actual scope size, and adjust deliberately rather than leaving the
+# default unconsidered for a large engagement.
+# rate_limits:
+#   max_total_requests: 50000
+#   max_per_second: 75

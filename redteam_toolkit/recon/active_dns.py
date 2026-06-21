@@ -24,7 +24,7 @@ class ActiveDNSModule(BaseReconModule):
 
     def __init__(self, engagement, rate_per_second: float = SAFE_RATE_PER_SECOND, resolve_fn=None):
         super().__init__(engagement)
-        self.rate_limiter = RateLimiter(rate_per_second)
+        self.rate_limiter = RateLimiter(rate_per_second, global_budget=engagement.rate_budget)
         self._resolve = resolve_fn or self._default_resolve
 
     def scan(self, target: str, wordlist: list[str] | None = None) -> list[Finding]:
