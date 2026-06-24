@@ -100,6 +100,13 @@ PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules port_scan
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --aggressive   # raises rate limits, prints a warning
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules subdomain_takeover   # dangling CNAME check
 
+# Batch scanning — one or more targets directly, and/or a file with one
+# target per line (# comments and blank lines ignored). Each target is
+# still scoped, rate-limited, and scanned independently and in sequence
+# — never in parallel. Works the same way for `vuln-id` and `active`.
+PYTHONPATH=. python -m redteam_toolkit.cli recon a.example.com b.example.com c.example.com
+PYTHONPATH=. python -m redteam_toolkit.cli recon --targets-file targets.txt --modules passive_dns
+
 # 6. Run vulnerability identification modules — read-only, no exploitation
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com --modules tls_analyzer,http_posture

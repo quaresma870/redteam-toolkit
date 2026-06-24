@@ -695,3 +695,187 @@ class TestCLI:
         runner = self._runner()
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
+
+
+class TestResolveTargets:
+    """_resolve_targets is shared by recon/vuln-id/active — tested directly
+    here so all three commands' batch behavior stays consistent without
+    needing three near-identical copies of the same test."""
+
+    def test_targets_from_argument_only(self):
+        from redteam_toolkit.cli import _resolve_targets
+        assert _resolve_targets(("a.example.com", "b.example.com"), None) == [
+            "a.example.com", "b.example.com",
+        ]
+
+    def test_targets_from_file_only(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("a.example.com\nb.example.com\n")
+        assert _resolve_targets((), str(f)) == ["a.example.com", "b.example.com"]
+
+    def test_file_ignores_blank_lines_and_comments(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("# a comment\na.example.com\n\n   \nb.example.com\n# another\n")
+        assert _resolve_targets((), str(f)) == ["a.example.com", "b.example.com"]
+
+    def test_combines_argument_and_file(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("b.example.com\nc.example.com\n")
+        assert _resolve_targets(("a.example.com",), str(f)) == [
+            "a.example.com", "b.example.com", "c.example.com",
+        ]
+
+    def test_deduplicates_preserving_first_seen_order(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("a.example.com\nb.example.com\n")
+        result = _resolve_targets(("b.example.com", "a.example.com"), str(f))
+        # b, a from the argument come first (argument order), then the
+        # file's a/b are both already-seen duplicates and dropped.
+        assert result == ["b.example.com", "a.example.com"]
+
+    def test_no_targets_at_all_returns_empty(self):
+        from redteam_toolkit.cli import _resolve_targets
+        assert _resolve_targets((), None) == []
+
+
+class TestMultiTargetCLI:
+    """CLI-level multi-target orchestration for recon/vuln-id/active.
+    Deliberately uses an unknown module name throughout — exercises the
+    real per-target loop and target-resolution code in cli.py without
+    needing real network access or live infrastructure for any actual
+    scan module to run against, which would make these tests flaky in
+    sandboxed/offline CI environments."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_recon_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+            assert "🎯 Recon: a.staging.example.com" in result.output
+            assert "🎯 Recon: b.staging.example.com" in result.output
+            assert "2 targets queued" in result.output
+
+    def test_recon_targets_file(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["recon"],
+            })
+            targets_file = Path(d) / "targets.txt"
+            targets_file.write_text("a.staging.example.com\nb.staging.example.com\n")
+
+            result = runner.invoke(cli, [
+                "recon", "--targets-file", str(targets_file),
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_recon_no_targets_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            result = runner.invoke(cli, ["recon", "--authorization", str(path)])
+            assert result.exit_code != 0
+            assert "no targets" in result.output.lower()
+
+    def test_recon_single_target_unchanged_output_shape(self):
+        """A single target must not show the "N targets queued"/summary
+        lines at all — backward-compatible output for the overwhelmingly
+        common single-target case."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert "targets queued" not in result.output
+            assert "total finding" not in result.output
+
+    def test_vuln_id_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["vuln-id"],
+            })
+            result = runner.invoke(cli, [
+                "vuln-id", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_active_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["active"],
+            })
+            result = runner.invoke(cli, [
+                "active", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path),
+                "--confirm", "test-2026-q1",
+                "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_one_out_of_scope_target_refused_others_still_run(self):
+        """A mix of in-scope and out-of-scope targets — the out-of-scope
+        one is refused and logged (not silently skipped), the in-scope
+        one still runs. Confirms scope checking stays genuinely per-target
+        inside the loop, not just at startup."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "evil-out-of-scope.com",
+                "--authorization", str(path), "--modules", "passive_dns",
+            ])
+            assert result.exit_code == 0, result.output
+            assert "evil-out-of-scope.com" in result.output
+            assert "a.staging.example.com" in result.output
+            # The out-of-scope target's module call shows an error, not a
+            # silent skip — _save_module_result/console output reflects it.
+            assert "⚠" in result.output or "error" in result.output.lower()

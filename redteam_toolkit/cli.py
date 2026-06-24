@@ -21,6 +21,28 @@ from rich.table import Table
 console = Console()
 
 
+def _resolve_targets(targets: tuple[str, ...], targets_file: str | None) -> list[str]:
+    """Combines targets given directly on the command line with any read
+    from --targets-file (one per line; blank lines and lines starting
+    with # ignored), deduplicated while preserving first-seen order so
+    output stays predictable run to run. Used identically by recon,
+    vuln-id, and active so all three batch the same way rather than each
+    growing its own slightly-different variant."""
+    resolved: list[str] = list(targets)
+    if targets_file:
+        for line in Path(targets_file).read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                resolved.append(line)
+    seen: set[str] = set()
+    deduped = []
+    for t in resolved:
+        if t not in seen:
+            seen.add(t)
+            deduped.append(t)
+    return deduped
+
+
 def _register_engagement(db_path: str, eng) -> None:
     from redteam_toolkit.core.history import register_engagement
 
@@ -226,7 +248,10 @@ def status(authorization, audit_log):
 
 
 @cli.command()
-@click.argument("target")
+@click.argument("targets", nargs=-1, required=False)
+@click.option("--targets-file", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="File with one target per line (# comments and blank lines ignored). "
+                   "Combined with any TARGETS given directly.")
 @click.option("--authorization", "-a", default="authorization.yml", show_default=True,
               help="Path to authorization.yml")
 @click.option("--audit-log", default=None,
@@ -237,8 +262,14 @@ def status(authorization, audit_log):
               help="Raise rate limits beyond the safe default. Prints a warning before running.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def recon(target, authorization, audit_log, modules, aggressive, db):
-    """Run reconnaissance modules against TARGET.
+def recon(targets, targets_file, authorization, audit_log, modules, aggressive, db):
+    """Run reconnaissance modules against one or more TARGETS.
+
+    Accepts multiple targets directly (recon a.example.com b.example.com)
+    and/or via --targets-file. Each target is scoped, rate-limited, and
+    scanned independently and in sequence — never in parallel, since
+    rate limiting and scope checking are deliberately per-target and
+    sequential, not a shared budget split across concurrent targets.
 
     Every module call goes through the engagement's scope gate first — a
     target outside the authorized scope or time window is refused and
@@ -278,6 +309,11 @@ def recon(target, authorization, audit_log, modules, aggressive, db):
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
 
+    resolved_targets = _resolve_targets(targets, targets_file)
+    if not resolved_targets:
+        console.print("[red]✘ No targets given — pass one or more TARGETS or --targets-file.[/red]")
+        sys.exit(1)
+
     if db:
         _register_engagement(db, eng)
 
@@ -300,197 +336,15 @@ def recon(target, authorization, audit_log, modules, aggressive, db):
 
     selected = [m.strip() for m in modules.split(",")] if modules else list(available.keys())
 
-    console.print()
-    console.rule(f"[bold cyan]🎯 Recon: {target}[/bold cyan]")
     if aggressive:
         console.print("\n[yellow]⚠ --aggressive: rate limits raised above the safe default.[/yellow]")
-    console.print()
+    if len(resolved_targets) > 1:
+        console.print(f"\n[dim]{len(resolved_targets)} targets queued, run sequentially (not in parallel).[/dim]")
 
-    all_findings = []
-    for name in selected:
-        if name not in available:
-            console.print(f"[red]Unknown module: {name}[/red]")
-            continue
-        result = available[name]().run(target)
-        if result.error:
-            console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
-        else:
-            console.print(
-                f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
-                f"({result.duration_ms:.0f}ms)"
-            )
-        all_findings.extend(result.findings)
-        if db:
-            _save_module_result(db, eng, target, result)
-
-    if all_findings:
-        t = Table(box=box.SIMPLE_HEAD, show_lines=True)
-        t.add_column("Module")
-        t.add_column("Title", overflow="fold")
-        t.add_column("Severity")
-        for f in all_findings:
-            t.add_row(f.module, f.title, f.severity.value)
+    grand_total_findings = []
+    for target in resolved_targets:
         console.print()
-        console.print(t)
-    else:
-        console.print("\n[dim]No findings.[/dim]")
-
-    if db:
-        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
-
-
-@cli.command(name="vuln-id")
-@click.argument("target")
-@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
-              help="Path to authorization.yml")
-@click.option("--audit-log", default=None,
-              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
-@click.option("--modules", "-m", default=None,
-              help="Comma-separated modules to run (default: all vuln-id modules except default_credentials)")
-@click.option("--check-default-creds", is_flag=True,
-              help="Opt in to the default-credential spot-check — off by default even if requested via --modules.")
-@click.option("--tls-port", default=443, show_default=True, help="Port to use for the TLS analyzer.")
-@click.option("--db", default=None,
-              help="SQLite database to persist results for the 'report' command and dashboard.")
-def vuln_id(target, authorization, audit_log, modules, check_default_creds, tls_port, db):
-    """Run vulnerability identification modules against TARGET. Read-only —
-    no exploitation, no credential brute-forcing.
-    """
-    from redteam_toolkit.core.authorization import AuthorizationError
-    from redteam_toolkit.core.cvss import ensure_cvss_score
-    from redteam_toolkit.core.engagement import Engagement
-    from redteam_toolkit.vuln_id.cve_correlation import CVECorrelationModule
-    from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
-    from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
-    from redteam_toolkit.vuln_id.tls_analyzer import TLSAnalyzerModule
-
-    try:
-        eng = Engagement.load(authorization, audit_log)
-    except AuthorizationError as exc:
-        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
-        sys.exit(1)
-
-    if db:
-        _register_engagement(db, eng)
-
-    available = {
-        "cve_correlation": lambda: CVECorrelationModule(eng),
-        "tls_analyzer": lambda: TLSAnalyzerModule(eng, port=tls_port),
-        "http_posture": lambda: HTTPPostureModule(eng),
-        "default_credentials": lambda: DefaultCredentialModule(eng),
-    }
-
-    # default_credentials is never included unless explicitly named — being
-    # 'vuln-id' authorized is not the same as opting into this specific check.
-    default_selection = [n for n in available if n != "default_credentials"]
-    selected = [m.strip() for m in modules.split(",")] if modules else default_selection
-
-    console.print()
-    console.rule(f"[bold cyan]🔍 Vulnerability identification: {target}[/bold cyan]")
-    console.print()
-
-    all_findings = []
-    for name in selected:
-        if name not in available:
-            console.print(f"[red]Unknown module: {name}[/red]")
-            continue
-        module = available[name]()
-        if name == "default_credentials":
-            result = module.run(target, opt_in=check_default_creds)
-        else:
-            result = module.run(target)
-
-        if result.error:
-            console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
-        else:
-            console.print(
-                f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
-                f"({result.duration_ms:.0f}ms)"
-            )
-        for f in result.findings:
-            ensure_cvss_score(f)
-        all_findings.extend(result.findings)
-        if db:
-            _save_module_result(db, eng, target, result)
-
-    if all_findings:
-        t = Table(box=box.SIMPLE_HEAD, show_lines=True)
-        t.add_column("Module")
-        t.add_column("Title", overflow="fold")
-        t.add_column("Severity")
-        t.add_column("CVSS", justify="right")
-        for f in all_findings:
-            t.add_row(f.module, f.title, f.severity.value, f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—")
-        console.print()
-        console.print(t)
-    else:
-        console.print("\n[dim]No findings.[/dim]")
-
-    if db:
-        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
-
-
-@cli.command()
-@click.argument("target")
-@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
-              help="Path to authorization.yml")
-@click.option("--audit-log", default=None,
-              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
-@click.option("--modules", "-m", default=None,
-              help="Comma-separated modules to run (default: all active-tier modules)")
-@click.option("--confirm", required=True,
-              help="Type the exact engagement_id from authorization.yml to confirm intent "
-                   "to run active-tier checks. Required every invocation — not a boolean flag.")
-@click.option("--canary-host", default="127.0.0.1", show_default=True,
-              help="Host to bind the local SSRF canary listener to.")
-@click.option("--db", default=None,
-              help="SQLite database to persist results for the 'report' command and dashboard.")
-def active(target, authorization, audit_log, modules, confirm, canary_host, db):
-    """Run active-tier detection modules against TARGET.
-
-    Non-destructive confirmation only — never exploitation. Requires
-    'active' in authorization.yml's allowed_categories AND typing the exact
-    engagement ID via --confirm, every time this command runs.
-    """
-    from redteam_toolkit.active.canary import LocalCanaryListener
-    from redteam_toolkit.active.open_redirect import OpenRedirectModule
-    from redteam_toolkit.active.path_traversal import PathTraversalModule
-    from redteam_toolkit.active.sqli import SQLInjectionModule
-    from redteam_toolkit.active.ssrf import SSRFDetectionModule
-    from redteam_toolkit.active.xss import XSSDetectionModule
-    from redteam_toolkit.core.authorization import AuthorizationError
-    from redteam_toolkit.core.engagement import Engagement, ScopeViolation
-
-    try:
-        eng = Engagement.load(authorization, audit_log)
-    except AuthorizationError as exc:
-        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
-        sys.exit(1)
-
-    try:
-        eng.confirm_active_tier(confirm)
-    except ScopeViolation as exc:
-        console.print(f"[red]✘ Active-tier not confirmed:[/red] {exc}")
-        sys.exit(1)
-
-    console.print("[green]✔[/green] Active-tier confirmed for this session.\n")
-
-    if db:
-        _register_engagement(db, eng)
-
-    canary = LocalCanaryListener(host=canary_host)
-    try:
-        available = {
-            "sqli_detection": lambda: SQLInjectionModule(eng),
-            "xss_detection": lambda: XSSDetectionModule(eng),
-            "open_redirect_detection": lambda: OpenRedirectModule(eng),
-            "ssrf_detection": lambda: SSRFDetectionModule(eng, canary_listener=canary),
-            "path_traversal_detection": lambda: PathTraversalModule(eng),
-        }
-        selected = [m.strip() for m in modules.split(",")] if modules else list(available.keys())
-
-        console.print()
-        console.rule(f"[bold red]⚡ Active detection: {target}[/bold red]")
+        console.rule(f"[bold cyan]🎯 Recon: {target}[/bold cyan]")
         console.print()
 
         all_findings = []
@@ -521,6 +375,243 @@ def active(target, authorization, audit_log, modules, confirm, canary_host, db):
             console.print(t)
         else:
             console.print("\n[dim]No findings.[/dim]")
+
+        grand_total_findings.extend(all_findings)
+
+    if len(resolved_targets) > 1:
+        console.print(f"\n[bold]{len(resolved_targets)} targets, {len(grand_total_findings)} total finding(s).[/bold]")
+
+    if db:
+        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
+
+
+@cli.command(name="vuln-id")
+@click.argument("targets", nargs=-1, required=False)
+@click.option("--targets-file", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="File with one target per line (# comments and blank lines ignored). "
+                   "Combined with any TARGETS given directly.")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated modules to run (default: all vuln-id modules except default_credentials)")
+@click.option("--check-default-creds", is_flag=True,
+              help="Opt in to the default-credential spot-check — off by default even if requested via --modules.")
+@click.option("--tls-port", default=443, show_default=True, help="Port to use for the TLS analyzer.")
+@click.option("--db", default=None,
+              help="SQLite database to persist results for the 'report' command and dashboard.")
+def vuln_id(targets, targets_file, authorization, audit_log, modules, check_default_creds, tls_port, db):
+    """Run vulnerability identification modules against one or more TARGETS.
+    Read-only — no exploitation, no credential brute-forcing.
+
+    Accepts multiple targets directly and/or via --targets-file, scanned
+    independently and in sequence — see `recon --help` for the same
+    sequential-not-parallel rationale, which applies here identically.
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.cvss import ensure_cvss_score
+    from redteam_toolkit.core.engagement import Engagement
+    from redteam_toolkit.vuln_id.cve_correlation import CVECorrelationModule
+    from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
+    from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
+    from redteam_toolkit.vuln_id.tls_analyzer import TLSAnalyzerModule
+
+    try:
+        eng = Engagement.load(authorization, audit_log)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    resolved_targets = _resolve_targets(targets, targets_file)
+    if not resolved_targets:
+        console.print("[red]✘ No targets given — pass one or more TARGETS or --targets-file.[/red]")
+        sys.exit(1)
+
+    if db:
+        _register_engagement(db, eng)
+
+    available = {
+        "cve_correlation": lambda: CVECorrelationModule(eng),
+        "tls_analyzer": lambda: TLSAnalyzerModule(eng, port=tls_port),
+        "http_posture": lambda: HTTPPostureModule(eng),
+        "default_credentials": lambda: DefaultCredentialModule(eng),
+    }
+
+    # default_credentials is never included unless explicitly named — being
+    # 'vuln-id' authorized is not the same as opting into this specific check.
+    default_selection = [n for n in available if n != "default_credentials"]
+    selected = [m.strip() for m in modules.split(",")] if modules else default_selection
+
+    if len(resolved_targets) > 1:
+        console.print(f"\n[dim]{len(resolved_targets)} targets queued, run sequentially (not in parallel).[/dim]")
+
+    grand_total_findings = []
+    for target in resolved_targets:
+        console.print()
+        console.rule(f"[bold cyan]🔍 Vulnerability identification: {target}[/bold cyan]")
+        console.print()
+
+        all_findings = []
+        for name in selected:
+            if name not in available:
+                console.print(f"[red]Unknown module: {name}[/red]")
+                continue
+            module = available[name]()
+            if name == "default_credentials":
+                result = module.run(target, opt_in=check_default_creds)
+            else:
+                result = module.run(target)
+
+            if result.error:
+                console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
+            else:
+                console.print(
+                    f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
+                    f"({result.duration_ms:.0f}ms)"
+                )
+            for f in result.findings:
+                ensure_cvss_score(f)
+            all_findings.extend(result.findings)
+            if db:
+                _save_module_result(db, eng, target, result)
+
+        if all_findings:
+            t = Table(box=box.SIMPLE_HEAD, show_lines=True)
+            t.add_column("Module")
+            t.add_column("Title", overflow="fold")
+            t.add_column("Severity")
+            t.add_column("CVSS", justify="right")
+            for f in all_findings:
+                t.add_row(f.module, f.title, f.severity.value, f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—")
+            console.print()
+            console.print(t)
+        else:
+            console.print("\n[dim]No findings.[/dim]")
+
+        grand_total_findings.extend(all_findings)
+
+    if len(resolved_targets) > 1:
+        console.print(f"\n[bold]{len(resolved_targets)} targets, {len(grand_total_findings)} total finding(s).[/bold]")
+
+    if db:
+        console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
+
+
+@cli.command()
+@click.argument("targets", nargs=-1, required=False)
+@click.option("--targets-file", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="File with one target per line (# comments and blank lines ignored). "
+                   "Combined with any TARGETS given directly.")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated modules to run (default: all active-tier modules)")
+@click.option("--confirm", required=True,
+              help="Type the exact engagement_id from authorization.yml to confirm intent "
+                   "to run active-tier checks. Required every invocation — not a boolean flag.")
+@click.option("--canary-host", default="127.0.0.1", show_default=True,
+              help="Host to bind the local SSRF canary listener to.")
+@click.option("--db", default=None,
+              help="SQLite database to persist results for the 'report' command and dashboard.")
+def active(targets, targets_file, authorization, audit_log, modules, confirm, canary_host, db):
+    """Run active-tier detection modules against one or more TARGETS.
+
+    Non-destructive confirmation only — never exploitation. Requires
+    'active' in authorization.yml's allowed_categories AND typing the exact
+    engagement ID via --confirm, every time this command runs.
+
+    Accepts multiple targets directly and/or via --targets-file, scanned
+    independently and in sequence (see `recon --help`) — the canary
+    listener is bound once and shared across all of them, since it's a
+    generic local listener, not target-specific.
+    """
+    from redteam_toolkit.active.canary import LocalCanaryListener
+    from redteam_toolkit.active.open_redirect import OpenRedirectModule
+    from redteam_toolkit.active.path_traversal import PathTraversalModule
+    from redteam_toolkit.active.sqli import SQLInjectionModule
+    from redteam_toolkit.active.ssrf import SSRFDetectionModule
+    from redteam_toolkit.active.xss import XSSDetectionModule
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.engagement import Engagement, ScopeViolation
+
+    try:
+        eng = Engagement.load(authorization, audit_log)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    resolved_targets = _resolve_targets(targets, targets_file)
+    if not resolved_targets:
+        console.print("[red]✘ No targets given — pass one or more TARGETS or --targets-file.[/red]")
+        sys.exit(1)
+
+    try:
+        eng.confirm_active_tier(confirm)
+    except ScopeViolation as exc:
+        console.print(f"[red]✘ Active-tier not confirmed:[/red] {exc}")
+        sys.exit(1)
+
+    console.print("[green]✔[/green] Active-tier confirmed for this session.\n")
+
+    if db:
+        _register_engagement(db, eng)
+
+    if len(resolved_targets) > 1:
+        console.print(f"[dim]{len(resolved_targets)} targets queued, run sequentially (not in parallel).[/dim]\n")
+
+    canary = LocalCanaryListener(host=canary_host)
+    try:
+        available = {
+            "sqli_detection": lambda: SQLInjectionModule(eng),
+            "xss_detection": lambda: XSSDetectionModule(eng),
+            "open_redirect_detection": lambda: OpenRedirectModule(eng),
+            "ssrf_detection": lambda: SSRFDetectionModule(eng, canary_listener=canary),
+            "path_traversal_detection": lambda: PathTraversalModule(eng),
+        }
+        selected = [m.strip() for m in modules.split(",")] if modules else list(available.keys())
+
+        grand_total_findings = []
+        for target in resolved_targets:
+            console.print()
+            console.rule(f"[bold red]⚡ Active detection: {target}[/bold red]")
+            console.print()
+
+            all_findings = []
+            for name in selected:
+                if name not in available:
+                    console.print(f"[red]Unknown module: {name}[/red]")
+                    continue
+                result = available[name]().run(target)
+                if result.error:
+                    console.print(f"[yellow]⚠[/yellow] {name}: {result.error}")
+                else:
+                    console.print(
+                        f"[green]✔[/green] {name}: {len(result.findings)} finding(s) "
+                        f"({result.duration_ms:.0f}ms)"
+                    )
+                all_findings.extend(result.findings)
+                if db:
+                    _save_module_result(db, eng, target, result)
+
+            if all_findings:
+                t = Table(box=box.SIMPLE_HEAD, show_lines=True)
+                t.add_column("Module")
+                t.add_column("Title", overflow="fold")
+                t.add_column("Severity")
+                for f in all_findings:
+                    t.add_row(f.module, f.title, f.severity.value)
+                console.print()
+                console.print(t)
+            else:
+                console.print("\n[dim]No findings.[/dim]")
+
+            grand_total_findings.extend(all_findings)
+
+        if len(resolved_targets) > 1:
+            console.print(f"\n[bold]{len(resolved_targets)} targets, {len(grand_total_findings)} total finding(s).[/bold]")
 
         if db:
             console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
