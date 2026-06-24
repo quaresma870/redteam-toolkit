@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS findings (
 """
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
+def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     cols = [row[1] for row in conn.execute("PRAGMA table_info(engagements)").fetchall()]
     if "audit_log_integrity_ok" not in cols:
@@ -77,7 +77,7 @@ def register_engagement(
     integrity snapshot, since the dashboard reconstructs reports purely
     from this database without access to the original audit log file)."""
     conn = sqlite3.connect(str(db_path))
-    _ensure_schema(conn)
+    ensure_schema(conn)
     conn.execute(
         """INSERT INTO engagements
            (engagement_id, client, authorized_by, target_scope, window_start, window_end,
@@ -105,7 +105,7 @@ def save_module_result(
 ) -> int:
     """Persist one module run (and its findings) for an engagement. Returns the run ID."""
     conn = sqlite3.connect(str(db_path))
-    _ensure_schema(conn)
+    ensure_schema(conn)
     cur = conn.execute(
         "INSERT INTO module_runs (engagement_id, module, target, error, duration_ms, timestamp) "
         "VALUES (?,?,?,?,?,?)",
@@ -133,7 +133,7 @@ def save_module_result(
 
 def get_engagement(db_path: str | Path, engagement_id: str) -> dict | None:
     conn = sqlite3.connect(str(db_path))
-    _ensure_schema(conn)
+    ensure_schema(conn)
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         "SELECT * FROM engagements WHERE engagement_id = ?", (engagement_id,)
@@ -144,7 +144,7 @@ def get_engagement(db_path: str | Path, engagement_id: str) -> dict | None:
 
 def list_engagements(db_path: str | Path) -> list[dict]:
     conn = sqlite3.connect(str(db_path))
-    _ensure_schema(conn)
+    ensure_schema(conn)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM engagements ORDER BY engagement_id").fetchall()
     conn.close()
@@ -155,7 +155,7 @@ def load_module_results(db_path: str | Path, engagement_id: str) -> list[ModuleR
     """Reconstruct one ModuleResult per distinct module name, combining
     findings across every run of that module for this engagement."""
     conn = sqlite3.connect(str(db_path))
-    _ensure_schema(conn)
+    ensure_schema(conn)
     conn.row_factory = sqlite3.Row
 
     runs = conn.execute(

@@ -879,3 +879,109 @@ class TestMultiTargetCLI:
             # The out-of-scope target's module call shows an error, not a
             # silent skip — _save_module_result/console output reflects it.
             assert "⚠" in result.output or "error" in result.output.lower()
+
+
+class TestDiffCLI:
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def _seed(self, db_path, engagement_id="test-2026-q1"):
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        register_engagement(db_path, engagement_id, "Example Corp", "Jane Doe, CISO",
+                             ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+        run1 = save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(
+            module="port_scanner",
+            findings=[Finding(module="port_scanner", title="Open port: 22", severity=Severity.LOW,
+                               category=FindingCategory.RECON, target="198.51.100.5")],
+        ))
+        save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(module="port_scanner", findings=[]))
+        run3 = save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(
+            module="subdomain_takeover",
+            findings=[Finding(module="subdomain_takeover", title="Possible takeover",
+                               severity=Severity.HIGH, category=FindingCategory.RECON, target="198.51.100.5")],
+        ))
+        return run1, run3
+
+    def test_diff_previous_latest_shows_new_finding_and_exits_nonzero(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            self._seed(db_path)
+
+            result = runner.invoke(cli, ["diff", "previous", "latest", "--authorization", str(auth_path), "--db", db_path])
+            assert "New findings" in result.output
+            assert "Possible takeover" in result.output
+            assert "Regression" in result.output
+            assert result.exit_code == 1
+
+    def test_diff_json_output(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            run1, run3 = self._seed(db_path)
+
+            result = runner.invoke(cli, [
+                "diff", str(run1), str(run3), "--authorization", str(auth_path), "--db", db_path, "--json",
+            ])
+            import json as _json
+            data = _json.loads(result.output)
+            assert data["run1"] == run1
+            assert data["run2"] == run3
+            assert len(data["resolved"]) == 1
+            assert data["resolved"][0]["title"] == "Open port: 22"
+
+    def test_diff_missing_db_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            result = runner.invoke(cli, [
+                "diff", "1", "2", "--authorization", str(auth_path), "--db", str(Path(d) / "nope.db"),
+            ])
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+
+    def test_diff_invalid_run_ref_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            self._seed(db_path)
+            result = runner.invoke(cli, [
+                "diff", "yesterday", "latest", "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code != 0
+            assert "invalid run reference" in result.output.lower()
+
+    def test_diff_no_regression_when_no_new_high_severity(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            from redteam_toolkit.core.history import register_engagement, save_module_result
+            from redteam_toolkit.core.models import ModuleResult
+
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            run1 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+            run2 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+
+            result = runner.invoke(cli, [
+                "diff", str(run1), str(run2), "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code == 0
+            assert "No regression" in result.output

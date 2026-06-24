@@ -121,6 +121,12 @@ PYTHONPATH=. python -m redteam_toolkit.cli active example.com --confirm acme-202
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --db engagements.db
 PYTHONPATH=. python -m redteam_toolkit.cli report --db engagements.db --format both
 
+# 8b. What's changed since the last scan? Run IDs are numeric (shown when
+#     a scan saves to --db) or the keywords 'latest'/'previous'. Exits
+#     non-zero if any new CRITICAL/HIGH finding appeared — convenient in CI.
+PYTHONPATH=. python -m redteam_toolkit.cli diff previous latest --db engagements.db
+PYTHONPATH=. python -m redteam_toolkit.cli diff 3 7 --db engagements.db --json
+
 # 9. Browse engagement history — read-only, not authenticated by default
 PYTHONPATH=. python -m redteam_toolkit.cli serve --db engagements.db
 ```
@@ -185,7 +191,8 @@ redteam-toolkit/
 │   │   ├── netutil.py           # bare-host extraction for scope checks on URL-style targets
 │   │   ├── rate_limit.py        # RateLimiter + GlobalRateBudget — hard session-wide ceiling
 │   │   ├── cvss.py              # project-wide CVSS scoring rubric
-│   │   └── history.py           # SQLite persistence of module results, keyed by engagement_id
+│   │   ├── history.py           # SQLite persistence of module results, keyed by engagement_id
+│   │   └── diff.py              # compare findings between two persisted scan points — `diff` command
 │   ├── templates/                # engagement-type authorization.yml templates (init --template)
 │   ├── reports/
 │   │   ├── build.py             # assembles a full EngagementReport from authorization + history

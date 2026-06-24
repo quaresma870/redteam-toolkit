@@ -64,6 +64,43 @@ def _save_module_result(db_path: str, eng, target: str, result) -> None:
     save_module_result(db_path, eng.authorization.engagement_id, target, result)
 
 
+def _print_diff(result) -> None:
+    sev_order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+
+    console.print()
+    console.rule(f"[bold cyan]Diff: run #{result.run1_id} → run #{result.run2_id}[/bold cyan]")
+    console.print()
+
+    if result.new:
+        t = Table(title=f"🆕 New findings ({len(result.new)})", box=box.SIMPLE_HEAD, border_style="red")
+        t.add_column("Severity")
+        t.add_column("Module")
+        t.add_column("Title", overflow="fold")
+        t.add_column("Target", overflow="fold")
+        for f in sorted(result.new, key=lambda x: sev_order.index(x["severity"])):
+            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "")
+        console.print(t)
+    else:
+        console.print("[green]No new findings.[/green]")
+
+    if result.resolved:
+        t = Table(title=f"✅ Resolved findings ({len(result.resolved)})", box=box.SIMPLE_HEAD, border_style="green")
+        t.add_column("Severity")
+        t.add_column("Module")
+        t.add_column("Title", overflow="fold")
+        t.add_column("Target", overflow="fold")
+        for f in sorted(result.resolved, key=lambda x: sev_order.index(x["severity"])):
+            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "")
+        console.print(t)
+
+    console.print(f"\n[dim]{result.unchanged_count} unchanged finding(s).[/dim]")
+
+    if result.has_new_regression:
+        console.print("\n[bold red]✘ Regression: new CRITICAL/HIGH findings introduced.[/bold red]\n")
+    else:
+        console.print("\n[green]✔ No regression.[/green]\n")
+
+
 try:
     __version__ = importlib.metadata.version("redteam-toolkit")
 except importlib.metadata.PackageNotFoundError:
@@ -665,6 +702,59 @@ def report(authorization, audit_log, db, fmt, output):
         pdf_path = base if base.endswith(".pdf") else f"{base}-report.pdf"
         write_pdf(rpt, pdf_path)
         console.print(f"[green]✔[/green] PDF report: [bold]{pdf_path}[/bold]")
+
+
+@cli.command()
+@click.argument("run1")
+@click.argument("run2")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml — used to determine the engagement_id.")
+@click.option("--db", required=True, help="SQLite database with persisted history (the --db used with recon/vuln-id/active).")
+@click.option("--json", "json_out", is_flag=True, help="Output as JSON instead of a table.")
+def diff(run1, run2, authorization, db, json_out):
+    """Compare findings between two persisted scan points for this engagement.
+
+    RUN1 and RUN2 may be numeric module-run IDs (shown when a scan saves
+    to --db), or the keywords 'latest'/'previous'. "The state as of a run"
+    means, for every module that's been run for this engagement by that
+    point, its most recent invocation at or before that point — so
+    re-running a module and getting a clean result correctly shows its
+    earlier findings as resolved, not retained forever.
+
+    Examples:
+      redteam-toolkit diff 3 7 --db engagements.db
+      redteam-toolkit diff previous latest --db engagements.db
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError, load_authorization
+    from redteam_toolkit.core.diff import diff_runs, resolve_run_id
+
+    try:
+        auth = load_authorization(authorization)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    if not Path(db).exists():
+        console.print(f"[red]✘ Database not found: {db}[/red]")
+        sys.exit(1)
+
+    try:
+        id1 = resolve_run_id(db, auth.engagement_id, run1)
+        id2 = resolve_run_id(db, auth.engagement_id, run2)
+    except ValueError as exc:
+        console.print(f"[red]✘ {exc}[/red]")
+        sys.exit(1)
+
+    result = diff_runs(db, auth.engagement_id, id1, id2)
+
+    if json_out:
+        import json as _json
+        console.print(_json.dumps(result.to_dict(), indent=2))
+    else:
+        _print_diff(result)
+
+    if result.has_new_regression:
+        sys.exit(1)
 
 
 @cli.command()
