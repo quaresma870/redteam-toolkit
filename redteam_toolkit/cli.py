@@ -269,6 +269,7 @@ def recon(target, authorization, audit_log, modules, aggressive, db):
         SAFE_RATE_PER_SECOND as PORT_SAFE,
     )
     from redteam_toolkit.recon.port_scanner import PortScannerModule
+    from redteam_toolkit.recon.subdomain_takeover import SubdomainTakeoverModule
     from redteam_toolkit.recon.web_fingerprint import WebFingerprintModule
 
     try:
@@ -291,6 +292,7 @@ def recon(target, authorization, audit_log, modules, aggressive, db):
         ),
         "zone_transfer": lambda: ZoneTransferModule(eng),
         "web_fingerprint": lambda: WebFingerprintModule(eng),
+        "subdomain_takeover": lambda: SubdomainTakeoverModule(eng),
         "endpoint_discovery": lambda: EndpointDiscoveryModule(
             eng, rate_per_second=ENDPOINT_AGGRESSIVE if aggressive else ENDPOINT_SAFE,
         ),

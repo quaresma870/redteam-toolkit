@@ -98,6 +98,7 @@ PYTHONPATH=. python -m redteam_toolkit.cli status
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules port_scanner,web_fingerprint
 PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --aggressive   # raises rate limits, prints a warning
+PYTHONPATH=. python -m redteam_toolkit.cli recon example.com --modules subdomain_takeover   # dangling CNAME check
 
 # 6. Run vulnerability identification modules — read-only, no exploitation
 PYTHONPATH=. python -m redteam_toolkit.cli vuln-id example.com
@@ -191,7 +192,10 @@ redteam-toolkit/
 │   │   ├── passive_dns.py
 │   │   ├── active_dns.py        # ActiveDNSModule + ZoneTransferModule
 │   │   ├── web_fingerprint.py
-│   │   └── endpoint_discovery.py
+│   │   ├── endpoint_discovery.py
+│   │   ├── subdomain_takeover.py   # dangling CNAME detection — see recon/data/README.md
+│   │   └── data/
+│   │       └── can_i_take_over_xyz_fingerprints.json   # vendored, CC-BY-4.0, attributed
 │   ├── vuln_id/
 │   │   ├── cve_correlation.py   # fingerprinted versions → NVD CVE lookup
 │   │   ├── tls_analyzer.py      # protocol/cipher/cert inspection, no exploit payloads

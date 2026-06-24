@@ -48,7 +48,7 @@ dashboard = ["fastapi>=0.110.0", "uvicorn>=0.27.0"]
 include = ["redteam_toolkit*"]
 
 [tool.setuptools.package-data]
-redteam_toolkit = ["templates/*.yml.example"]
+redteam_toolkit = ["templates/*.yml.example", "recon/data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
