@@ -133,7 +133,14 @@ class EndpointDiscoveryModule(BaseReconModule):
             return None
 
     def _default_fetch(self, url: str) -> tuple[int, str]:
-        req = urllib.request.Request(url, headers={"User-Agent": "redteam-toolkit/0.1"})
+        # Session/auth headers (if any are configured for this engagement —
+        # see Engagement.auth_headers()) are merged in here so this module
+        # can discover endpoints behind a login wall, not just publicly
+        # reachable ones. Empty by default, identical to today's
+        # unauthenticated-only behaviour when nothing is configured.
+        headers = {"User-Agent": "redteam-toolkit/0.1"}
+        headers.update(self.engagement.auth_headers())
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return resp.status, resp.read().decode("utf-8", errors="replace")

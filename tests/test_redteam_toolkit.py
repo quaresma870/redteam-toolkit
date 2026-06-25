@@ -136,6 +136,117 @@ class TestLoadAuthorization:
             assert auth.window.start.tzinfo is not None
 
 
+class TestSessionAuth:
+    """authorization.yml's optional session_auth.headers — for scanning
+    targets behind a login wall. Session credentials are treated with
+    the same care as everything else security-sensitive in this toolkit:
+    never logged or rendered in plaintext anywhere."""
+
+    def test_no_session_auth_means_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            auth = load_authorization(path)
+            assert auth.session_auth is None
+
+    def test_session_auth_parses_correctly(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, session_auth={"headers": {"Cookie": "session=abc123"}})
+            auth = load_authorization(path)
+            assert auth.session_auth.headers == {"Cookie": "session=abc123"}
+
+    def test_session_auth_missing_headers_key_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, session_auth={"not_headers": {}})
+            with pytest.raises(AuthorizationError, match="session_auth"):
+                load_authorization(path)
+
+    def test_session_auth_repr_redacts_values(self):
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Cookie": "session=super-secret-real-token"})
+        rendered = repr(auth)
+        assert "super-secret-real-token" not in rendered
+        assert "REDACTED" in rendered
+
+    def test_session_auth_str_also_redacts(self):
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Authorization": "Bearer super-secret-real-token"})
+        rendered = str(auth)
+        assert "super-secret-real-token" not in rendered
+
+    def test_session_auth_redacted_repr_still_shows_header_names(self):
+        """Header NAMES (not values) are fine to show — useful for
+        debugging "is auth even configured" without exposing the
+        credential itself."""
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Cookie": "session=secret"})
+        assert "Cookie" in repr(auth)
+
+
+class TestEngagementAuthHeaders:
+    def test_no_session_auth_means_empty_headers(self, engagement_factory):
+        eng = engagement_factory()
+        assert eng.auth_headers() == {}
+
+    def test_headers_from_authorization_yml(self, engagement_factory):
+        eng = engagement_factory(session_auth_headers={"Cookie": "session=abc123"})
+        assert eng.auth_headers() == {"Cookie": "session=abc123"}
+
+    def test_cli_override_merges_with_file(self):
+        """A --session-header override supplements authorization.yml's
+        configured headers rather than replacing the whole set."""
+        import datetime
+
+        import yaml
+
+        from redteam_toolkit.core.engagement import Engagement
+
+        with tempfile.TemporaryDirectory() as d:
+            now = datetime.datetime.now(datetime.UTC)
+            path = Path(d) / "authorization.yml"
+            path.write_text(yaml.safe_dump({
+                "engagement_id": "test", "authorized_by": "Test User",
+                "authorized_contact_email": "test@example.com", "client": "Test Co",
+                "scope": {"targets": ["127.0.0.1"], "excluded_targets": [], "allowed_categories": ["recon"]},
+                "window": {
+                    "start": (now - datetime.timedelta(hours=1)).isoformat(),
+                    "end": (now + datetime.timedelta(days=1)).isoformat(),
+                },
+                "confirmation_phrase": "I confirm",
+                "session_auth": {"headers": {"Cookie": "session=from-file"}},
+            }))
+            eng = Engagement.load(path, extra_session_headers={"Authorization": "Bearer from-cli"})
+            headers = eng.auth_headers()
+            assert headers["Cookie"] == "session=from-file"
+            assert headers["Authorization"] == "Bearer from-cli"
+
+    def test_cli_override_takes_precedence_on_same_header_name(self, engagement_factory):
+        import datetime
+
+        import yaml
+
+        from redteam_toolkit.core.engagement import Engagement
+
+        with tempfile.TemporaryDirectory() as d:
+            now = datetime.datetime.now(datetime.UTC)
+            path = Path(d) / "authorization.yml"
+            path.write_text(yaml.safe_dump({
+                "engagement_id": "test", "authorized_by": "Test User",
+                "authorized_contact_email": "test@example.com", "client": "Test Co",
+                "scope": {"targets": ["127.0.0.1"], "excluded_targets": [], "allowed_categories": ["recon"]},
+                "window": {
+                    "start": (now - datetime.timedelta(hours=1)).isoformat(),
+                    "end": (now + datetime.timedelta(days=1)).isoformat(),
+                },
+                "confirmation_phrase": "I confirm",
+                "session_auth": {"headers": {"Cookie": "session=old-from-file"}},
+            }))
+            eng = Engagement.load(path, extra_session_headers={"Cookie": "session=fresh-from-cli"})
+            assert eng.auth_headers()["Cookie"] == "session=fresh-from-cli"
+
+
 # ── Scope matching ────────────────────────────────────────────────────────────
 
 class TestScopeMatching:
@@ -695,3 +806,369 @@ class TestCLI:
         runner = self._runner()
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
+
+
+class TestResolveTargets:
+    """_resolve_targets is shared by recon/vuln-id/active — tested directly
+    here so all three commands' batch behavior stays consistent without
+    needing three near-identical copies of the same test."""
+
+    def test_targets_from_argument_only(self):
+        from redteam_toolkit.cli import _resolve_targets
+        assert _resolve_targets(("a.example.com", "b.example.com"), None) == [
+            "a.example.com", "b.example.com",
+        ]
+
+    def test_targets_from_file_only(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("a.example.com\nb.example.com\n")
+        assert _resolve_targets((), str(f)) == ["a.example.com", "b.example.com"]
+
+    def test_file_ignores_blank_lines_and_comments(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("# a comment\na.example.com\n\n   \nb.example.com\n# another\n")
+        assert _resolve_targets((), str(f)) == ["a.example.com", "b.example.com"]
+
+    def test_combines_argument_and_file(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("b.example.com\nc.example.com\n")
+        assert _resolve_targets(("a.example.com",), str(f)) == [
+            "a.example.com", "b.example.com", "c.example.com",
+        ]
+
+    def test_deduplicates_preserving_first_seen_order(self, tmp_path):
+        from redteam_toolkit.cli import _resolve_targets
+        f = tmp_path / "targets.txt"
+        f.write_text("a.example.com\nb.example.com\n")
+        result = _resolve_targets(("b.example.com", "a.example.com"), str(f))
+        # b, a from the argument come first (argument order), then the
+        # file's a/b are both already-seen duplicates and dropped.
+        assert result == ["b.example.com", "a.example.com"]
+
+    def test_no_targets_at_all_returns_empty(self):
+        from redteam_toolkit.cli import _resolve_targets
+        assert _resolve_targets((), None) == []
+
+
+class TestMultiTargetCLI:
+    """CLI-level multi-target orchestration for recon/vuln-id/active.
+    Deliberately uses an unknown module name throughout — exercises the
+    real per-target loop and target-resolution code in cli.py without
+    needing real network access or live infrastructure for any actual
+    scan module to run against, which would make these tests flaky in
+    sandboxed/offline CI environments."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_recon_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+            assert "🎯 Recon: a.staging.example.com" in result.output
+            assert "🎯 Recon: b.staging.example.com" in result.output
+            assert "2 targets queued" in result.output
+
+    def test_recon_targets_file(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["recon"],
+            })
+            targets_file = Path(d) / "targets.txt"
+            targets_file.write_text("a.staging.example.com\nb.staging.example.com\n")
+
+            result = runner.invoke(cli, [
+                "recon", "--targets-file", str(targets_file),
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_recon_no_targets_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            result = runner.invoke(cli, ["recon", "--authorization", str(path)])
+            assert result.exit_code != 0
+            assert "no targets" in result.output.lower()
+
+    def test_recon_single_target_unchanged_output_shape(self):
+        """A single target must not show the "N targets queued"/summary
+        lines at all — backward-compatible output for the overwhelmingly
+        common single-target case."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert "targets queued" not in result.output
+            assert "total finding" not in result.output
+
+    def test_vuln_id_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["vuln-id"],
+            })
+            result = runner.invoke(cli, [
+                "vuln-id", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path), "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_active_runs_each_target_in_sequence(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["active"],
+            })
+            result = runner.invoke(cli, [
+                "active", "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path),
+                "--confirm", "test-2026-q1",
+                "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert result.output.count("Unknown module: nonexistent_module") == 2
+
+    def test_one_out_of_scope_target_refused_others_still_run(self):
+        """A mix of in-scope and out-of-scope targets — the out-of-scope
+        one is refused and logged (not silently skipped), the in-scope
+        one still runs. Confirms scope checking stays genuinely per-target
+        inside the loop, not just at startup."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "evil-out-of-scope.com",
+                "--authorization", str(path), "--modules", "passive_dns",
+            ])
+            assert result.exit_code == 0, result.output
+            assert "evil-out-of-scope.com" in result.output
+            assert "a.staging.example.com" in result.output
+            # The out-of-scope target's module call shows an error, not a
+            # silent skip — _save_module_result/console output reflects it.
+            assert "⚠" in result.output or "error" in result.output.lower()
+
+
+class TestSessionHeaderCLI:
+    """Confirms --session-header is correctly parsed and threaded through
+    to Engagement.auth_headers() via the real CLI invocation path — the
+    full authenticated-discovery behaviour itself (the actual HTTP
+    request carrying the header) is verified separately in
+    tests/recon/test_endpoint_discovery.py::TestAuthenticatedScanning
+    against the real mock-target server, which is the right level for
+    that; this is specifically about the CLI option parsing/wiring."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_malformed_session_header_rejected_with_usage_error(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "no-colon-here", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 2
+            assert "Name: Value" in result.output
+
+    def test_well_formed_session_header_accepted_recon(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+
+    def test_well_formed_session_header_accepted_vuln_id(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["vuln-id"],
+            })
+            result = runner.invoke(cli, [
+                "vuln-id", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+
+    def test_well_formed_session_header_accepted_active(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["active"],
+            })
+            result = runner.invoke(cli, [
+                "active", "a.staging.example.com", "--authorization", str(path),
+                "--confirm", "test-2026-q1",
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+
+
+class TestDiffCLI:
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def _seed(self, db_path, engagement_id="test-2026-q1"):
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        register_engagement(db_path, engagement_id, "Example Corp", "Jane Doe, CISO",
+                             ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+        run1 = save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(
+            module="port_scanner",
+            findings=[Finding(module="port_scanner", title="Open port: 22", severity=Severity.LOW,
+                               category=FindingCategory.RECON, target="198.51.100.5")],
+        ))
+        save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(module="port_scanner", findings=[]))
+        run3 = save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(
+            module="subdomain_takeover",
+            findings=[Finding(module="subdomain_takeover", title="Possible takeover",
+                               severity=Severity.HIGH, category=FindingCategory.RECON, target="198.51.100.5")],
+        ))
+        return run1, run3
+
+    def test_diff_previous_latest_shows_new_finding_and_exits_nonzero(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            self._seed(db_path)
+
+            result = runner.invoke(cli, ["diff", "previous", "latest", "--authorization", str(auth_path), "--db", db_path])
+            assert "New findings" in result.output
+            assert "Possible takeover" in result.output
+            assert "Regression" in result.output
+            assert result.exit_code == 1
+
+    def test_diff_json_output(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            run1, run3 = self._seed(db_path)
+
+            result = runner.invoke(cli, [
+                "diff", str(run1), str(run3), "--authorization", str(auth_path), "--db", db_path, "--json",
+            ])
+            import json as _json
+            data = _json.loads(result.output)
+            assert data["run1"] == run1
+            assert data["run2"] == run3
+            assert len(data["resolved"]) == 1
+            assert data["resolved"][0]["title"] == "Open port: 22"
+
+    def test_diff_missing_db_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            result = runner.invoke(cli, [
+                "diff", "1", "2", "--authorization", str(auth_path), "--db", str(Path(d) / "nope.db"),
+            ])
+            assert result.exit_code != 0
+            assert "not found" in result.output.lower()
+
+    def test_diff_invalid_run_ref_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            self._seed(db_path)
+            result = runner.invoke(cli, [
+                "diff", "yesterday", "latest", "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code != 0
+            assert "invalid run reference" in result.output.lower()
+
+    def test_diff_no_regression_when_no_new_high_severity(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            from redteam_toolkit.core.history import register_engagement, save_module_result
+            from redteam_toolkit.core.models import ModuleResult
+
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            run1 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+            run2 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+
+            result = runner.invoke(cli, [
+                "diff", str(run1), str(run2), "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code == 0
+            assert "No regression" in result.output

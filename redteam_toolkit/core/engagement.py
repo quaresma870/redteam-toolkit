@@ -30,13 +30,24 @@ class ActiveTierNotConfirmed(ScopeViolation):
 
 
 class Engagement:
-    def __init__(self, authorization: Authorization, audit_log_path: str | Path):
+    def __init__(
+        self,
+        authorization: Authorization,
+        audit_log_path: str | Path,
+        extra_session_headers: dict[str, str] | None = None,
+    ):
         self.authorization = authorization
         self.audit_log = AuditLog(audit_log_path)
         # Active-tier modules require an additional, in-the-moment
         # confirmation on top of 'active' being in allowed_categories —
         # see confirm_active_tier(). Resets every process; never persisted.
         self._active_tier_confirmed = False
+        # CLI --session-header values take precedence over authorization.yml's
+        # session_auth.headers on a per-header-name basis (a fresher,
+        # more explicit, per-invocation override), not an all-or-nothing
+        # replacement — supplying one extra header via the CLI doesn't
+        # drop whatever's already configured in the file.
+        self._extra_session_headers = dict(extra_session_headers or {})
 
         from redteam_toolkit.core.rate_limit import (
             DEFAULT_MAX_PER_SECOND,
@@ -50,14 +61,29 @@ class Engagement:
             max_per_second=rl.max_per_second if rl else DEFAULT_MAX_PER_SECOND,
         )
 
+    def auth_headers(self) -> dict[str, str]:
+        """Headers every module's HTTP-based fetch should attach to
+        outgoing requests, for scanning targets behind a login wall —
+        authorization.yml's session_auth.headers merged with any
+        --session-header CLI overrides (CLI wins per-header-name on
+        conflict). Empty dict (the default) means no session auth is
+        configured at all, identical to today's unauthenticated-only
+        behaviour for every existing engagement that doesn't use this."""
+        headers = dict(self.authorization.session_auth.headers) if self.authorization.session_auth else {}
+        headers.update(self._extra_session_headers)
+        return headers
+
     @classmethod
     def load(
-        cls, authorization_path: str | Path, audit_log_path: str | Path | None = None
+        cls,
+        authorization_path: str | Path,
+        audit_log_path: str | Path | None = None,
+        extra_session_headers: dict[str, str] | None = None,
     ) -> Engagement:
         auth = load_authorization(authorization_path)
         if audit_log_path is None:
             audit_log_path = Path(authorization_path).parent / f"{auth.engagement_id}.audit.jsonl"
-        return cls(auth, audit_log_path)
+        return cls(auth, audit_log_path, extra_session_headers=extra_session_headers)
 
     def confirm_active_tier(self, typed_engagement_id: str) -> None:
         """Required once per session before any active-tier module can run.

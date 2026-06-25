@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "redteam-toolkit"
-version = "0.6.0"
+version = "0.7.0"
 description = "Authorized penetration testing toolkit — mandatory scope enforcement, tamper-evident audit logging"
 readme = "README.md"
 license = { text = "MIT" }
@@ -48,7 +48,7 @@ dashboard = ["fastapi>=0.110.0", "uvicorn>=0.27.0"]
 include = ["redteam_toolkit*"]
 
 [tool.setuptools.package-data]
-redteam_toolkit = ["templates/*.yml.example"]
+redteam_toolkit = ["templates/*.yml.example", "recon/data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

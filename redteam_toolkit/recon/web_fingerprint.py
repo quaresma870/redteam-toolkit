@@ -86,12 +86,14 @@ class WebFingerprintModule(BaseReconModule):
 
     def _default_fetch(self, target: str) -> tuple[dict, str]:
         url = target if target.startswith(("http://", "https://")) else f"https://{target}"
-        req = urllib.request.Request(url, headers={"User-Agent": "redteam-toolkit/0.1"})
+        headers = {"User-Agent": "redteam-toolkit/0.1"}
+        headers.update(self.engagement.auth_headers())
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                headers = dict(resp.headers)
+                resp_headers = dict(resp.headers)
                 body = resp.read().decode("utf-8", errors="replace")
-            return headers, body
+            return resp_headers, body
         except urllib.error.HTTPError as exc:
-            headers = dict(exc.headers) if exc.headers else {}
-            return headers, ""
+            resp_headers = dict(exc.headers) if exc.headers else {}
+            return resp_headers, ""

@@ -134,3 +134,73 @@ class TestEndpointDiscovery:
         result = m.run("http://203.0.113.5:8080", wordlist=["admin"])
         assert result.error is not None
         assert "scope" in result.error
+
+
+class TestAuthenticatedScanning:
+    """Issue #39's acceptance criteria, verified end-to-end against the
+    real mock-target server's session-cookie-protected /protected/data
+    route (tests/fixtures/mock_target/server.py) — not mocked at the
+    fetch_fn level, since the whole point is confirming the REAL default
+    HTTP fetch implementation actually attaches the configured session
+    header to a real outgoing request."""
+
+    def test_authenticated_request_discovers_protected_endpoint(self, engagement_factory, mock_target):
+        from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+
+        eng = engagement_factory(session_auth_headers={"Cookie": "session=valid-test-token-abc123"})
+        m = EndpointDiscoveryModule(eng, rate_per_second=1000, respect_robots=False)
+        result = m.run(f"http://127.0.0.1:{mock_target}", wordlist=["protected/data"])
+
+        assert result.error is None
+        assert len(result.findings) == 1
+        assert "protected/data" in result.findings[0].title
+        assert "(200)" in result.findings[0].title
+
+    def test_unauthenticated_request_does_not_discover_protected_endpoint(self, engagement_factory, mock_target):
+        """Same target, same wordlist, no session_auth configured at all
+        — the protected endpoint must NOT be discovered (it 401s, which
+        is >= 400 and therefore filtered out), proving authentication
+        actually mattered rather than the endpoint just always being
+        reachable regardless."""
+        from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+
+        eng = engagement_factory()  # no session_auth_headers at all
+        m = EndpointDiscoveryModule(eng, rate_per_second=1000, respect_robots=False)
+        result = m.run(f"http://127.0.0.1:{mock_target}", wordlist=["protected/data"])
+
+        assert result.error is None
+        assert result.findings == []
+
+    def test_wrong_session_value_also_refused(self, engagement_factory, mock_target):
+        """A configured-but-wrong session header behaves the same as no
+        header at all — confirms the mock server (and by extension this
+        test) is actually checking the credential's value, not just its
+        presence."""
+        from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+
+        eng = engagement_factory(session_auth_headers={"Cookie": "session=wrong-token"})
+        m = EndpointDiscoveryModule(eng, rate_per_second=1000, respect_robots=False)
+        result = m.run(f"http://127.0.0.1:{mock_target}", wordlist=["protected/data"])
+
+        assert result.findings == []
+
+    def test_session_header_value_never_appears_in_finding_or_audit_log(self, engagement_factory, mock_target):
+        """Acceptance criterion: session credentials are never written to
+        a report or log in plaintext. Checks the actual rendered finding
+        AND the actual audit log file content — not just that the
+        SessionAuth object's own repr is redacted (already covered
+        elsewhere), but that nothing downstream ever serialises the raw
+        value into anything persisted."""
+        from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+
+        secret_token = "session=valid-test-token-abc123"
+        eng = engagement_factory(session_auth_headers={"Cookie": secret_token})
+        m = EndpointDiscoveryModule(eng, rate_per_second=1000, respect_robots=False)
+        result = m.run(f"http://127.0.0.1:{mock_target}", wordlist=["protected/data"])
+
+        for finding in result.findings:
+            assert secret_token not in repr(finding)
+            assert secret_token not in str(finding.extra)
+
+        audit_log_content = eng.audit_log.path.read_text()
+        assert secret_token not in audit_log_content
