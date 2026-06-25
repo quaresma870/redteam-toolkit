@@ -161,6 +161,44 @@ confirmation_phrase: "I confirm authorization for acme-2026-q2"
 - **The window is re-checked on every action**, not just once at startup —
   an engagement that expires mid-run stops being authorized immediately.
 
+### Authenticated scanning (targets behind a login wall)
+
+Every module scans unauthenticated by default. For applications that require
+a login to reach the parts of the attack surface actually worth testing,
+supply session credentials (a cookie, a bearer token, or any other
+header-based auth) that get attached to every HTTP request `recon`,
+`vuln-id`, and `active` make — via `authorization.yml`:
+
+```yaml
+session_auth:
+  headers:
+    Cookie: "session=<your-real-session-token>"
+```
+
+and/or per-invocation via `--session-header` (repeatable, merges with and
+overrides the file's headers on a same-name conflict):
+
+```bash
+PYTHONPATH=. python -m redteam_toolkit.cli recon app.acme.com \
+  --session-header "Cookie: session=abc123" \
+  --modules endpoint_discovery,http_posture
+```
+
+**These are credentials — treated with the same care as everything else
+security-sensitive in this toolkit:**
+- Never echoed to the console, never written to the audit log, never
+  rendered into a report. The object holding them overrides its own
+  `repr()`/`str()` to redact values, so an accidental print/log call
+  anywhere in the codebase can't leak a live token by mistake.
+- Don't commit `authorization.yml` with a real session token in it to
+  version control — treat it the same as any other live credential
+  (a `.gitignore` entry, a secrets manager, or pull it from an environment
+  variable into the YAML at deploy time, whichever fits your workflow).
+- A session token is typically short-lived. If scans against an
+  authenticated target start failing partway through a long engagement,
+  the token has probably expired — re-authenticate and supply a fresh one,
+  rather than assuming the target itself changed.
+
 ### The audit log
 
 Every action — allowed or refused — is recorded in `<engagement_id>.audit.jsonl`,
@@ -184,7 +222,7 @@ redteam-toolkit/
 ├── redteam_toolkit/
 │   ├── cli.py                   # init, validate-scope, status, recon, vuln-id, active
 │   ├── core/
-│   │   ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching
+│   │   ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching + SessionAuth
 │   │   ├── audit_log.py         # hash-chained, append-only audit log
 │   │   ├── engagement.py        # Engagement — scope gate + active-tier confirmation gate
 │   │   ├── models.py            # Finding, ModuleResult, EngagementReport

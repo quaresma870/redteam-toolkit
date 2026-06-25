@@ -43,6 +43,25 @@ def _resolve_targets(targets: tuple[str, ...], targets_file: str | None) -> list
     return deduped
 
 
+def _parse_session_headers(raw: tuple[str, ...]) -> dict[str, str]:
+    """Parses --session-header 'Name: Value' strings into a dict. Used by
+    recon/vuln-id/active so a module's HTTP-based fetch can attach session
+    credentials (a cookie, a bearer token) to outgoing requests — for
+    scanning targets behind a login wall. These are credentials: never
+    echoed back to the console, never written to the audit log or any
+    report — see Engagement.auth_headers() and SessionAuth's redacted
+    repr/str for where that's actually enforced."""
+    headers: dict[str, str] = {}
+    for item in raw:
+        if ":" not in item:
+            raise click.BadParameter(
+                f"--session-header must be 'Name: Value', got: {item!r}"
+            )
+        name, _, value = item.partition(":")
+        headers[name.strip()] = value.strip()
+    return headers
+
+
 def _register_engagement(db_path: str, eng) -> None:
     from redteam_toolkit.core.history import register_engagement
 
@@ -297,9 +316,13 @@ def status(authorization, audit_log):
               help="Comma-separated modules to run (default: all recon modules)")
 @click.option("--aggressive", is_flag=True,
               help="Raise rate limits beyond the safe default. Prints a warning before running.")
+@click.option("--session-header", multiple=True,
+              help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
+                   "this run makes — for scanning targets behind a login wall. Repeatable. "
+                   "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def recon(targets, targets_file, authorization, audit_log, modules, aggressive, db):
+def recon(targets, targets_file, authorization, audit_log, modules, aggressive, session_header, db):
     """Run reconnaissance modules against one or more TARGETS.
 
     Accepts multiple targets directly (recon a.example.com b.example.com)
@@ -341,7 +364,7 @@ def recon(targets, targets_file, authorization, audit_log, modules, aggressive, 
     from redteam_toolkit.recon.web_fingerprint import WebFingerprintModule
 
     try:
-        eng = Engagement.load(authorization, audit_log)
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
@@ -436,9 +459,13 @@ def recon(targets, targets_file, authorization, audit_log, modules, aggressive, 
 @click.option("--check-default-creds", is_flag=True,
               help="Opt in to the default-credential spot-check — off by default even if requested via --modules.")
 @click.option("--tls-port", default=443, show_default=True, help="Port to use for the TLS analyzer.")
+@click.option("--session-header", multiple=True,
+              help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
+                   "this run makes — for scanning targets behind a login wall. Repeatable. "
+                   "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def vuln_id(targets, targets_file, authorization, audit_log, modules, check_default_creds, tls_port, db):
+def vuln_id(targets, targets_file, authorization, audit_log, modules, check_default_creds, tls_port, session_header, db):
     """Run vulnerability identification modules against one or more TARGETS.
     Read-only — no exploitation, no credential brute-forcing.
 
@@ -455,7 +482,7 @@ def vuln_id(targets, targets_file, authorization, audit_log, modules, check_defa
     from redteam_toolkit.vuln_id.tls_analyzer import TLSAnalyzerModule
 
     try:
-        eng = Engagement.load(authorization, audit_log)
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
@@ -551,9 +578,13 @@ def vuln_id(targets, targets_file, authorization, audit_log, modules, check_defa
                    "to run active-tier checks. Required every invocation — not a boolean flag.")
 @click.option("--canary-host", default="127.0.0.1", show_default=True,
               help="Host to bind the local SSRF canary listener to.")
+@click.option("--session-header", multiple=True,
+              help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
+                   "this run makes — for scanning targets behind a login wall. Repeatable. "
+                   "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def active(targets, targets_file, authorization, audit_log, modules, confirm, canary_host, db):
+def active(targets, targets_file, authorization, audit_log, modules, confirm, canary_host, session_header, db):
     """Run active-tier detection modules against one or more TARGETS.
 
     Non-destructive confirmation only — never exploitation. Requires
@@ -575,7 +606,7 @@ def active(targets, targets_file, authorization, audit_log, modules, confirm, ca
     from redteam_toolkit.core.engagement import Engagement, ScopeViolation
 
     try:
-        eng = Engagement.load(authorization, audit_log)
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)

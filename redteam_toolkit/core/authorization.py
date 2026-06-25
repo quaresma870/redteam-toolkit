@@ -45,6 +45,31 @@ class RateLimits:
 
 
 @dataclass
+class SessionAuth:
+    """Session credentials (a cookie, a bearer token, or any other
+    header-based auth) to attach to every outgoing HTTP request a module
+    makes, for scanning targets behind a login wall. Configured under
+    authorization.yml's optional 'session_auth.headers' key, and/or
+    supplied per-invocation via --session-header.
+
+    These are credentials — treated with the same care as everything
+    else security-sensitive in this toolkit. repr()/str() are
+    deliberately overridden to redact header values, so an accidental
+    print(), f-string, or log call anywhere in the codebase (now or
+    added later) can't leak a live session token in plaintext by
+    mistake. The audit log and every report-rendering path are never
+    given this object at all, by construction — there's nothing for
+    them to accidentally serialise."""
+    headers: dict[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        redacted = {k: "***REDACTED***" for k in self.headers}
+        return f"SessionAuth(headers={redacted!r})"
+
+    __str__ = __repr__
+
+
+@dataclass
 class Authorization:
     engagement_id: str
     authorized_by: str
@@ -54,6 +79,7 @@ class Authorization:
     window: Window
     confirmation_phrase: str
     rate_limits: RateLimits | None = None
+    session_auth: SessionAuth | None = None
     source_path: Path | None = None
 
     def is_within_window(self, now: datetime | None = None) -> bool:
@@ -160,6 +186,15 @@ def load_authorization(path: str | Path) -> Authorization:
                 f"'rate_limits' must include numeric 'max_total_requests' and 'max_per_second': {exc}"
             ) from exc
 
+    session_auth = None
+    session_auth_data = data.get("session_auth")
+    if session_auth_data:
+        if not isinstance(session_auth_data, dict) or not isinstance(session_auth_data.get("headers"), dict):
+            raise AuthorizationError(
+                "'session_auth' must be a mapping with a 'headers' mapping of header name to value."
+            )
+        session_auth = SessionAuth(headers={str(k): str(v) for k, v in session_auth_data["headers"].items()})
+
     return Authorization(
         engagement_id=str(data["engagement_id"]),
         authorized_by=str(data["authorized_by"]),
@@ -169,6 +204,7 @@ def load_authorization(path: str | Path) -> Authorization:
         window=Window(start=start, end=end),
         confirmation_phrase=str(data["confirmation_phrase"]),
         rate_limits=rate_limits,
+        session_auth=session_auth,
         source_path=path,
     )
 

@@ -142,7 +142,9 @@ class HTTPPostureModule(BaseReconModule):
 
     def _default_fetch(self, target: str) -> dict:
         url = target if target.startswith(("http://", "https://")) else f"https://{target}"
-        req = urllib.request.Request(url, headers={"User-Agent": "redteam-toolkit/0.1"})
+        headers = {"User-Agent": "redteam-toolkit/0.1"}
+        headers.update(self.engagement.auth_headers())
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return dict(resp.headers)

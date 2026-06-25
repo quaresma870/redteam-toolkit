@@ -20,13 +20,12 @@ def engagement_factory():
 
     tmpdirs = []
 
-    def _make(targets=None, allowed_categories=None, excluded_targets=None):
+    def _make(targets=None, allowed_categories=None, excluded_targets=None, session_auth_headers=None):
         tmpdir = tempfile.TemporaryDirectory()
         tmpdirs.append(tmpdir)
         now = datetime.datetime.now(datetime.UTC)
 
-        auth_path = Path(tmpdir.name) / "authorization.yml"
-        auth_path.write_text(yaml.safe_dump({
+        auth_data = {
             "engagement_id": "test",
             "authorized_by": "Test User",
             "authorized_contact_email": "test@example.com",
@@ -41,7 +40,12 @@ def engagement_factory():
                 "end": (now + datetime.timedelta(days=1)).isoformat(),
             },
             "confirmation_phrase": "I confirm",
-        }))
+        }
+        if session_auth_headers:
+            auth_data["session_auth"] = {"headers": session_auth_headers}
+
+        auth_path = Path(tmpdir.name) / "authorization.yml"
+        auth_path.write_text(yaml.safe_dump(auth_data))
         return Engagement.load(auth_path, Path(tmpdir.name) / "test.audit.jsonl")
 
     yield _make

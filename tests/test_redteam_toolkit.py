@@ -136,6 +136,117 @@ class TestLoadAuthorization:
             assert auth.window.start.tzinfo is not None
 
 
+class TestSessionAuth:
+    """authorization.yml's optional session_auth.headers — for scanning
+    targets behind a login wall. Session credentials are treated with
+    the same care as everything else security-sensitive in this toolkit:
+    never logged or rendered in plaintext anywhere."""
+
+    def test_no_session_auth_means_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            auth = load_authorization(path)
+            assert auth.session_auth is None
+
+    def test_session_auth_parses_correctly(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, session_auth={"headers": {"Cookie": "session=abc123"}})
+            auth = load_authorization(path)
+            assert auth.session_auth.headers == {"Cookie": "session=abc123"}
+
+    def test_session_auth_missing_headers_key_raises(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, session_auth={"not_headers": {}})
+            with pytest.raises(AuthorizationError, match="session_auth"):
+                load_authorization(path)
+
+    def test_session_auth_repr_redacts_values(self):
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Cookie": "session=super-secret-real-token"})
+        rendered = repr(auth)
+        assert "super-secret-real-token" not in rendered
+        assert "REDACTED" in rendered
+
+    def test_session_auth_str_also_redacts(self):
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Authorization": "Bearer super-secret-real-token"})
+        rendered = str(auth)
+        assert "super-secret-real-token" not in rendered
+
+    def test_session_auth_redacted_repr_still_shows_header_names(self):
+        """Header NAMES (not values) are fine to show — useful for
+        debugging "is auth even configured" without exposing the
+        credential itself."""
+        from redteam_toolkit.core.authorization import SessionAuth
+        auth = SessionAuth(headers={"Cookie": "session=secret"})
+        assert "Cookie" in repr(auth)
+
+
+class TestEngagementAuthHeaders:
+    def test_no_session_auth_means_empty_headers(self, engagement_factory):
+        eng = engagement_factory()
+        assert eng.auth_headers() == {}
+
+    def test_headers_from_authorization_yml(self, engagement_factory):
+        eng = engagement_factory(session_auth_headers={"Cookie": "session=abc123"})
+        assert eng.auth_headers() == {"Cookie": "session=abc123"}
+
+    def test_cli_override_merges_with_file(self):
+        """A --session-header override supplements authorization.yml's
+        configured headers rather than replacing the whole set."""
+        import datetime
+
+        import yaml
+
+        from redteam_toolkit.core.engagement import Engagement
+
+        with tempfile.TemporaryDirectory() as d:
+            now = datetime.datetime.now(datetime.UTC)
+            path = Path(d) / "authorization.yml"
+            path.write_text(yaml.safe_dump({
+                "engagement_id": "test", "authorized_by": "Test User",
+                "authorized_contact_email": "test@example.com", "client": "Test Co",
+                "scope": {"targets": ["127.0.0.1"], "excluded_targets": [], "allowed_categories": ["recon"]},
+                "window": {
+                    "start": (now - datetime.timedelta(hours=1)).isoformat(),
+                    "end": (now + datetime.timedelta(days=1)).isoformat(),
+                },
+                "confirmation_phrase": "I confirm",
+                "session_auth": {"headers": {"Cookie": "session=from-file"}},
+            }))
+            eng = Engagement.load(path, extra_session_headers={"Authorization": "Bearer from-cli"})
+            headers = eng.auth_headers()
+            assert headers["Cookie"] == "session=from-file"
+            assert headers["Authorization"] == "Bearer from-cli"
+
+    def test_cli_override_takes_precedence_on_same_header_name(self, engagement_factory):
+        import datetime
+
+        import yaml
+
+        from redteam_toolkit.core.engagement import Engagement
+
+        with tempfile.TemporaryDirectory() as d:
+            now = datetime.datetime.now(datetime.UTC)
+            path = Path(d) / "authorization.yml"
+            path.write_text(yaml.safe_dump({
+                "engagement_id": "test", "authorized_by": "Test User",
+                "authorized_contact_email": "test@example.com", "client": "Test Co",
+                "scope": {"targets": ["127.0.0.1"], "excluded_targets": [], "allowed_categories": ["recon"]},
+                "window": {
+                    "start": (now - datetime.timedelta(hours=1)).isoformat(),
+                    "end": (now + datetime.timedelta(days=1)).isoformat(),
+                },
+                "confirmation_phrase": "I confirm",
+                "session_auth": {"headers": {"Cookie": "session=old-from-file"}},
+            }))
+            eng = Engagement.load(path, extra_session_headers={"Cookie": "session=fresh-from-cli"})
+            assert eng.auth_headers()["Cookie"] == "session=fresh-from-cli"
+
+
 # ── Scope matching ────────────────────────────────────────────────────────────
 
 class TestScopeMatching:
@@ -879,6 +990,82 @@ class TestMultiTargetCLI:
             # The out-of-scope target's module call shows an error, not a
             # silent skip — _save_module_result/console output reflects it.
             assert "⚠" in result.output or "error" in result.output.lower()
+
+
+class TestSessionHeaderCLI:
+    """Confirms --session-header is correctly parsed and threaded through
+    to Engagement.auth_headers() via the real CLI invocation path — the
+    full authenticated-discovery behaviour itself (the actual HTTP
+    request carrying the header) is verified separately in
+    tests/recon/test_endpoint_discovery.py::TestAuthenticatedScanning
+    against the real mock-target server, which is the right level for
+    that; this is specifically about the CLI option parsing/wiring."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_malformed_session_header_rejected_with_usage_error(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "no-colon-here", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 2
+            assert "Name: Value" in result.output
+
+    def test_well_formed_session_header_accepted_recon(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "recon", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+
+    def test_well_formed_session_header_accepted_vuln_id(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["vuln-id"],
+            })
+            result = runner.invoke(cli, [
+                "vuln-id", "a.staging.example.com", "--authorization", str(path),
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+
+    def test_well_formed_session_header_accepted_active(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["active"],
+            })
+            result = runner.invoke(cli, [
+                "active", "a.staging.example.com", "--authorization", str(path),
+                "--confirm", "test-2026-q1",
+                "--session-header", "Cookie: session=abc123", "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
 
 
 class TestDiffCLI:

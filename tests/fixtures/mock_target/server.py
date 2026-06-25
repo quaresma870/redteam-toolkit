@@ -32,6 +32,9 @@ class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 
+_VALID_SESSION_COOKIE = "session=valid-test-token-abc123"
+
+
 class MockTargetHandler(http.server.BaseHTTPRequestHandler):
     """Routes deliberately covering both vulnerable and safe variants of
     common test cases, for later sprints' detection modules to exercise."""
@@ -55,6 +58,7 @@ class MockTargetHandler(http.server.BaseHTTPRequestHandler):
             "/vulnerable/ssrf": self._vulnerable_ssrf,
             "/banner": self._banner,
             "/robots.txt": self._robots,
+            "/protected/data": self._protected_data,
         }
         handler = routes.get(self.path.split("?")[0])
         if handler:
@@ -63,6 +67,18 @@ class MockTargetHandler(http.server.BaseHTTPRequestHandler):
             self._not_found()
 
     # ── Routes ────────────────────────────────────────────────────────────────
+
+    def _protected_data(self) -> None:
+        """Requires the exact session cookie below — anything else
+        (missing entirely, or present but wrong) is refused the same way,
+        so a test can confirm auth actually mattered rather than the
+        endpoint just being open regardless."""
+        cookie_header = self.headers.get("Cookie", "")
+        if _VALID_SESSION_COOKIE in cookie_header:
+            self._respond(200, "application/json", b'{"secret": "only visible when authenticated"}')
+        else:
+            self._respond(401, "text/plain", b"authentication required")
+
 
     def _index(self) -> None:
         self._respond(200, "text/plain", b"mock-target ok")
