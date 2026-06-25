@@ -3,6 +3,39 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.0
+- feat: **subdomain takeover detection** (`subdomain_takeover` recon module) — resolves each
+  candidate subdomain's CNAME chain and matches it against a vendored copy of the
+  community-maintained EdOverflow/can-i-take-over-xyz fingerprint database (CC-BY-4.0, attributed
+  in `recon/data/README.md`), filtered to the 26 entries the project currently marks vulnerable.
+  That filter matters: GitHub Pages, Heroku, Netlify, and Shopify have all since fixed the classic
+  takeover vector via mandatory domain verification and are deliberately excluded, confirmed
+  against the live, current data rather than assumed from older security folklore. AWS S3 and a
+  wide family of Microsoft Azure services remain genuinely exploitable today and are included.
+- feat: **multi-target batch scanning** — `recon`/`vuln-id`/`active` now accept multiple targets
+  directly and/or via a new `--targets-file` option, scanned independently and in sequence (never
+  in parallel — rate limiting and scope checking stay genuinely per-target). Single-target output
+  is unchanged.
+- feat: **diff between scans** (`diff` command) — ports secureaudit's proven
+  `secureaudit diff previous latest` pattern (stable-key matching, same new/resolved/unchanged
+  shape, exit-1-on-regression CI convenience), adapted to this project's accumulating
+  per-module-per-invocation history: "the state as of run X" means each module's most recent
+  invocation at or before that point, not a union of every historical invocation — otherwise a
+  fixed finding could never show as resolved.
+- feat: **authenticated scanning** — session/cookie support for targets behind a login wall.
+  `authorization.yml`'s optional `session_auth.headers` and/or a new `--session-header` CLI flag
+  (repeatable, on `recon`/`vuln-id`/`active`) get merged into every HTTP request
+  `endpoint_discovery`, `http_posture`, and `web_fingerprint` make. Session credentials are
+  redacted from any `repr()`/`str()` and never reach the audit log or any report, by construction
+  — verified end-to-end against a real session-cookie-protected route added to the mock-target test
+  server, not just unit-tested in isolation.
+- fix: `pyproject.toml`'s `package-data` only listed `templates/*.yml.example` — the new
+  `recon/data/*.json` fingerprint file would have been silently missing from any `pip install`ed
+  copy of this package.
+- chore: `core/history.py`'s `_ensure_schema` made public (`ensure_schema`) now that it's genuinely
+  used across two modules (`history.py` and the new `core/diff.py`), not kept private just by
+  leftover convention.
+
 ### v0.6.0 — Sprint 5: Production Hardening & Distribution
 - feat: **global rate budget** (`core/rate_limit.GlobalRateBudget`) — a hard, session-wide request
   ceiling that no module can exceed regardless of internal bugs, on top of each module's own
