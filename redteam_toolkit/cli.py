@@ -127,7 +127,9 @@ except importlib.metadata.PackageNotFoundError:
 
 _TEMPLATE = """# redteam-toolkit authorization — fill in EVERY field before use.
 # This file is the only thing that permits any scan to run.
-# Read docs/legal-and-ethics.md before completing it.
+# Read https://github.com/quaresma870/redteam-toolkit/blob/main/docs/legal-and-ethics.md before completing it.
+# (docs/ is a repo-only directory, not bundled into the pip package — this
+# link works regardless of how you installed this tool.)
 
 engagement_id: ""              # unique per engagement, e.g. "acme-2026-q2"
 authorized_by: ""              # full name + title of the person who approved this
@@ -154,7 +156,9 @@ def cli():
 
     Every command other than 'init' requires a validated authorization.yml.
     Run 'redteam-toolkit init' to create one, and read
-    docs/legal-and-ethics.md before your first engagement.
+    https://github.com/quaresma870/redteam-toolkit/blob/main/docs/legal-and-ethics.md
+    before your first engagement (docs/ isn't bundled into the pip
+    package — this link works regardless of how you installed this tool).
     """
 
 
@@ -800,12 +804,22 @@ def serve(db, host, port):
     without putting an auth layer in front of it.
     """
     try:
-        import uvicorn
+        # fastapi imported here too, not left for dashboard.app's own
+        # import to surface unhandled — same class of bug found and
+        # fixed in the sibling secureaudit repo: if uvicorn happened to
+        # be installed but fastapi wasn't, this would otherwise dump a
+        # raw, unhandled ModuleNotFoundError traceback instead of the
+        # same clean message below.
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
     except ImportError:
-        console.print(
-            "[red]Dashboard dependencies missing.[/red] Install with: "
-            "pip install redteam-toolkit[dashboard]"
-        )
+        console.print("[red]Dashboard dependencies missing.[/red]")
+        # Square brackets are Rich markup syntax — an unescaped
+        # '[dashboard]' here gets silently stripped from the visible
+        # output instead of printed literally. Same bug found and fixed
+        # in secureaudit's identical message; fixed here proactively
+        # rather than waiting to reproduce it separately.
+        console.print("Install with: pip install 'redteam-toolkit\\[dashboard]'")
         sys.exit(1)
 
     from redteam_toolkit.dashboard.app import create_app
