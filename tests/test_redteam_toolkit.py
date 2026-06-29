@@ -1172,3 +1172,57 @@ class TestDiffCLI:
             ])
             assert result.exit_code == 0
             assert "No regression" in result.output
+
+
+class TestServeMissingDashboardDeps:
+    """Regression tests for a real, reproduced bug found via systematic
+    end-to-end audit (built the real wheel, installed in a clean venv,
+    ran every README command literally): the exact same class of bug
+    already found and fixed in the sibling secureaudit repo — only
+    `import uvicorn` was guarded, and the error message's own
+    '[dashboard]' got silently stripped by Rich's console markup parser
+    (square brackets are markup tag syntax) instead of printed
+    literally."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    @staticmethod
+    def _block_import(*names):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name in names:
+                raise ImportError(f"simulated: {name} not installed")
+            return real_import(name, *args, **kwargs)
+        return fake_import
+
+    def test_missing_uvicorn_shows_clean_message_with_brackets_intact(self):
+        import builtins
+        from unittest.mock import patch
+
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with patch.object(builtins, "__import__", side_effect=self._block_import("uvicorn")):
+            result = runner.invoke(cli, ["serve"])
+        assert result.exit_code == 1
+        assert "Dashboard dependencies missing" in result.output
+        assert "redteam-toolkit[dashboard]" in result.output
+        assert "Traceback" not in result.output
+
+    def test_missing_fastapi_shows_clean_message_not_raw_traceback(self):
+        """The specific bug: uvicorn present, fastapi absent."""
+        import builtins
+        from unittest.mock import patch
+
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with patch.object(builtins, "__import__", side_effect=self._block_import("fastapi")):
+            result = runner.invoke(cli, ["serve"])
+        assert result.exit_code == 1
+        assert "Dashboard dependencies missing" in result.output
+        assert "redteam-toolkit[dashboard]" in result.output
+        assert "Traceback" not in result.output
+        assert "ModuleNotFoundError" not in result.output
