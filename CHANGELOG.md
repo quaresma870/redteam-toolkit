@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.1
+- fix: **`serve`'s missing-dependency error message had the same bug just found and fixed in the
+  sibling secureaudit repo** — only `import uvicorn` was guarded (a present-uvicorn/absent-fastapi
+  combination would dump a raw, unhandled traceback), and the message's own
+  `redteam-toolkit[dashboard]` had its square brackets silently stripped by Rich's console markup
+  parser instead of printed literally.
+- fix: the CLI's own messages pointed at `docs/legal-and-ethics.md`, a real file in this repo but
+  not bundled into the pip package — anyone who installed via `pip install redteam-toolkit` rather
+  than cloning the source had no local copy of that path. Now points at the GitHub blob URL, which
+  resolves regardless of install method.
+- chore: verified every README-documented command end-to-end against a real installed wheel in a
+  clean venv (not just the dev source tree) — `init` for all three engagement templates,
+  `validate-scope`, `status`, `recon`/`vuln-id`/`active` against a real mock target including
+  `--targets-file` and `--session-header`, `report --format both`, `diff` (text and `--json`), and
+  `serve`'s actual API routes with real persisted data.
+
 ### v0.7.0
 - feat: **subdomain takeover detection** (`subdomain_takeover` recon module) — resolves each
   candidate subdomain's CNAME chain and matches it against a vendored copy of the
