@@ -50,12 +50,125 @@ jobs:
         run: python -m build
       - name: Check package metadata
         run: twine check dist/*
-      - name: Install built wheel in a clean venv and smoke-test the CLI
+      - name: Install built wheel (with dashboard extra) in a clean venv
         run: |
           python -m venv /tmp/smoke-venv
-          /tmp/smoke-venv/bin/pip install dist/*.whl
+          /tmp/smoke-venv/bin/pip install "$(echo dist/*.whl)[dashboard]"
           /tmp/smoke-venv/bin/redteam-toolkit --version
           /tmp/smoke-venv/bin/redteam-toolkit --help
+
+      - name: "Integration test: every README-documented command, against the real installed wheel"
+        # The existing e2e-smoke-test job below exercises a lot of real
+        # behavior already, but via CliRunner against the dev source tree
+        # -- never the actual installed package a real `pip install
+        # redteam-toolkit` user gets. This is the gap that let the
+        # serve/[dashboard]-message and docs/legal-and-ethics.md-path
+        # bugs ship past 390+ passing tests: those exercised the CLI
+        # in-process, never a real subprocess against a real wheel.
+        run: |
+          set -euo pipefail
+          RT=/tmp/smoke-venv/bin/redteam-toolkit
+          WORK=$(mktemp -d)
+          cd "$WORK"
+
+          echo "::group::Start the mock target server (background subprocess, real socket)"
+          PYTHONPATH="$GITHUB_WORKSPACE" python3 -c "
+          import sys, time
+          sys.path.insert(0, '$GITHUB_WORKSPACE')
+          from tests.fixtures.mock_target.server import start_mock_target
+          server, port = start_mock_target()
+          with open('/tmp/mock_port.txt', 'w') as f:
+              f.write(str(port))
+          time.sleep(120)
+          " &
+          MOCK_PID=$!
+          sleep 2
+          PORT=$(cat /tmp/mock_port.txt)
+          echo "Mock target on port $PORT"
+          echo "::endgroup::"
+
+          echo "::group::init for all three engagement templates"
+          for t in web-app network internal-redteam; do
+            $RT init --output "auth-$t.yml" --template "$t"
+            test -s "auth-$t.yml"
+          done
+          echo "::endgroup::"
+
+          echo "::group::Fill in a real authorization.yml"
+          python3 -c "
+          import datetime, yaml
+          now = datetime.datetime.now(datetime.timezone.utc)
+          data = {
+              'engagement_id': 'ci-integration-test',
+              'authorized_by': 'CI', 'authorized_contact_email': 'ci@example.com',
+              'client': 'CI Integration Test',
+              'scope': {'targets': ['127.0.0.1'], 'excluded_targets': [], 'allowed_categories': ['recon', 'vuln-id', 'active']},
+              'window': {
+                  'start': (now - datetime.timedelta(hours=1)).isoformat(),
+                  'end': (now + datetime.timedelta(days=1)).isoformat(),
+              },
+              'confirmation_phrase': 'I confirm authorization for ci-integration-test',
+          }
+          with open('authorization.yml', 'w') as f:
+              yaml.safe_dump(data, f)
+          "
+          echo "::endgroup::"
+
+          echo "::group::validate-scope, status"
+          $RT validate-scope --authorization authorization.yml
+          $RT status --authorization authorization.yml
+          echo "::endgroup::"
+
+          echo "::group::recon -- multi-target via --targets-file"
+          echo "127.0.0.1" > targets.txt
+          $RT recon --targets-file targets.txt --authorization authorization.yml \
+            --modules port_scanner --db engagements.db
+
+          OUTPUT=$($RT recon "http://127.0.0.1:$PORT" --authorization authorization.yml \
+            --modules http_posture --db engagements.db)
+          echo "$OUTPUT" | grep -q "http_posture" || (echo "recon did not run http_posture" && exit 1)
+          echo "::endgroup::"
+
+          echo "::group::vuln-id -- with --session-header (would have caught a wiring regression)"
+          $RT vuln-id "http://127.0.0.1:$PORT" --authorization authorization.yml \
+            --modules http_posture --session-header "Cookie: session=test123" --db engagements.db
+          echo "::endgroup::"
+
+          echo "::group::active -- real SQLi detection against the mock target's known-vulnerable route"
+          OUTPUT=$($RT active "http://127.0.0.1:$PORT/vulnerable/sqli" \
+            --authorization authorization.yml --confirm ci-integration-test \
+            --modules sqli_detection --db engagements.db)
+          echo "$OUTPUT" | grep -q "CRITICAL" || (echo "active did not detect the mock target's known SQLi" && exit 1)
+          echo "::endgroup::"
+
+          echo "::group::diff previous latest -- both text and --json"
+          # diff exits 1 when it finds a new CRITICAL/HIGH finding (by
+          # design, for CI use) -- the SQLi detection above is exactly
+          # such a finding, so this exit is expected here, hence || true.
+          $RT diff previous latest --authorization authorization.yml --db engagements.db || true
+          $RT diff previous latest --authorization authorization.yml --db engagements.db --json | python3 -c "import json, sys; json.load(sys.stdin)" || true
+          echo "::endgroup::"
+
+          echo "::group::report --format both"
+          $RT report --authorization authorization.yml --db engagements.db --format both --output ci-report
+          test -s ci-report-report.html
+          test -s ci-report-report.pdf
+          head -c5 ci-report-report.pdf | grep -q "%PDF-"
+          echo "::endgroup::"
+
+          echo "::group::serve -- would have caught the [dashboard]-message Rich-markup-bracket bug"
+          $RT serve --db engagements.db --port 8290 &
+          SERVE_PID=$!
+          sleep 2
+          curl -sf http://127.0.0.1:8290/ -o /dev/null
+          curl -sf http://127.0.0.1:8290/api/engagements -o /tmp/engagements.json
+          python3 -c "import json; data = json.load(open('/tmp/engagements.json')); assert len(data) > 0, 'no engagements returned'"
+          kill $SERVE_PID
+          wait $SERVE_PID 2>/dev/null || true
+          echo "::endgroup::"
+
+          kill $MOCK_PID 2>/dev/null || true
+          echo "All integration checks passed."
 
   e2e-smoke-test:
     name: End-to-end smoke test
