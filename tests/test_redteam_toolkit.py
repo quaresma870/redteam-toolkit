@@ -1276,3 +1276,76 @@ class TestServeMissingDashboardDeps:
         assert "redteam-toolkit[dashboard]" in result.output
         assert "Traceback" not in result.output
         assert "ModuleNotFoundError" not in result.output
+
+
+# ── Documentation freshness ───────────────────────────────────────────────────
+
+class TestDocumentationFreshness:
+    """Confirms the README's project structure tree and module-name usage
+    examples stay in sync with the real source tree and the CLI's actual
+    registered module names — the same class of drift (README claiming
+    something that's since gone stale) found and fixed in the sibling
+    secureaudit repo (#32 there), adapted to this project's actual shape:
+    there's no single numeric '**N tests**' claim to verify here (the CI
+    section deliberately uses a fuzzy '390+' for exactly this reason), but
+    there IS a project structure tree listing individual module files and
+    README usage examples naming specific --modules values, either of
+    which can silently go stale the same way."""
+
+    def _readme_text(self) -> str:
+        return (Path(__file__).parent.parent / "README.md").read_text()
+
+    def _project_structure_section(self) -> str:
+        readme = self._readme_text()
+        start = readme.index("## Project structure")
+        # Up to the next top-level '## ' heading after this one.
+        next_heading = readme.index("\n## ", start + len("## Project structure"))
+        return readme[start:next_heading]
+
+    def test_every_source_module_appears_in_readme_tree(self):
+        """Every .py file under redteam_toolkit/ (excluding __init__.py)
+        must be named somewhere in the README's project structure tree.
+        Catches a module added without updating the tree -- this is how
+        recon/base.py was found missing during the audit that created
+        this test."""
+        import redteam_toolkit
+        pkg_root = Path(redteam_toolkit.__file__).parent
+        tree_section = self._project_structure_section()
+
+        missing = []
+        for py_file in sorted(pkg_root.rglob("*.py")):
+            if py_file.name == "__init__.py" or "__pycache__" in py_file.parts:
+                continue
+            if py_file.name not in tree_section:
+                missing.append(str(py_file.relative_to(pkg_root.parent)))
+
+        assert not missing, (
+            f"These source files aren't mentioned in README's project structure "
+            f"tree: {missing}. Add them to the tree (or remove the file if it's "
+            f"genuinely unused)."
+        )
+
+    def test_every_module_name_in_readme_examples_is_actually_registered(self):
+        """Parses '--modules X,Y,Z' occurrences in the README's bash code
+        blocks and confirms each named module is a real key in cli.py's
+        recon/vuln-id/active 'available' dicts -- catches the inverse
+        drift: a README example referencing a renamed or removed module."""
+        import re
+
+        readme = self._readme_text()
+        module_refs = set()
+        for match in re.finditer(r"--modules\s+([a-z_,]+)", readme):
+            module_refs.update(match.group(1).split(","))
+
+        assert module_refs, "Expected to find at least one --modules example in the README"
+
+        cli_source = Path(__file__).parent.parent / "redteam_toolkit" / "cli.py"
+        cli_text = cli_source.read_text()
+        registered = set(re.findall(r'"([a-z_]+)":\s*lambda:\s*\w+Module', cli_text))
+
+        unknown = module_refs - registered
+        assert not unknown, (
+            f"README examples reference module(s) not found in cli.py's "
+            f"registered modules: {unknown}. Either the module was renamed/"
+            f"removed, or this is a typo in the README."
+        )

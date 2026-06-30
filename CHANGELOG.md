@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.3
+- feat: **documentation freshness check** — new `TestDocumentationFreshness` confirms every source module file is mentioned in the README's project structure tree and every `--modules` example references a real, registered module name — closes #45. Immediately caught a real, pre-existing gap (`recon/base.py` was missing from the tree) and fixed it.
+
 ### v0.7.2
 - feat: **CI integration-test tier** — extended the build job's minimal smoke test into a real
   integration test covering every README-documented command against the actual installed wheel via

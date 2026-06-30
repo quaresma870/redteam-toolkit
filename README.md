@@ -239,6 +239,7 @@ redteam-toolkit/
 │   ├── dashboard/
 │   │   └── app.py                # read-only FastAPI dashboard — not authenticated by default
 │   ├── recon/
+│   │   ├── base.py              # BaseReconModule — shared run() scope/rate-limit gate
 │   │   ├── port_scanner.py
 │   │   ├── fingerprint.py
 │   │   ├── passive_dns.py
