@@ -95,7 +95,17 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Fill in a real authorization.yml"
-          python3 -c "
+          # Uses the smoke-venv's own python3, not the bare system one --
+          # PyYAML is a dependency of the wheel itself (installed into
+          # the venv), but the `build` job never runs `pip install -r
+          # requirements.txt` against the system interpreter, so a bare
+          # `python3 -c "import yaml"` here would fail with
+          # ModuleNotFoundError in CI specifically (this sandbox's system
+          # python3 happens to already have PyYAML installed globally for
+          # unrelated reasons, which is exactly why this difference
+          # wasn't caught by local testing and needed a real CI run to
+          # surface).
+          /tmp/smoke-venv/bin/python3 -c "
           import datetime, yaml
           now = datetime.datetime.now(datetime.timezone.utc)
           data = {
