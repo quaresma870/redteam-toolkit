@@ -407,13 +407,13 @@ class TestAuditLogIntegrity:
             log.record("eng-1", "recon", "1.2.3.4", "a", True)
             log.record("eng-1", "recon", "1.2.3.4", "b", True)
             log.record("eng-1", "recon", "1.2.3.4", "c", False)
-            valid, broken_line = verify_log_integrity(log_path)
+            valid, broken_line, _entry_count = verify_log_integrity(log_path)
             assert valid
             assert broken_line is None
 
     def test_empty_log_is_valid(self):
         with tempfile.TemporaryDirectory() as d:
-            valid, broken_line = verify_log_integrity(Path(d) / "nonexistent.jsonl")
+            valid, broken_line, _entry_count = verify_log_integrity(Path(d) / "nonexistent.jsonl")
             assert valid
 
     def test_tampered_entry_detected(self):
@@ -431,7 +431,7 @@ class TestAuditLogIntegrity:
             lines[1] = json.dumps(tampered)
             log_path.write_text("\n".join(lines) + "\n")
 
-            valid, broken_line = verify_log_integrity(log_path)
+            valid, broken_line, _entry_count = verify_log_integrity(log_path)
             assert not valid
             assert broken_line == 2
 
@@ -447,7 +447,7 @@ class TestAuditLogIntegrity:
             del lines[1]  # remove the middle entry
             log_path.write_text("\n".join(lines) + "\n")
 
-            valid, broken_line = verify_log_integrity(log_path)
+            valid, broken_line, _entry_count = verify_log_integrity(log_path)
             assert not valid
 
     def test_reordered_entries_detected(self):
@@ -462,8 +462,184 @@ class TestAuditLogIntegrity:
             lines[1], lines[2] = lines[2], lines[1]
             log_path.write_text("\n".join(lines) + "\n")
 
-            valid, broken_line = verify_log_integrity(log_path)
+            valid, broken_line, _entry_count = verify_log_integrity(log_path)
             assert not valid
+
+
+class TestAuditLogIntegrityViaRealCLI:
+    """Issue #46: verifies tamper detection through the actual `status`
+    command a user would run, against a real audit log produced by a
+    real engagement (recon against the mock target), manually edited
+    with the same kind of operations a human investigating an incident
+    would use (sed-style line edit/delete/reorder), not constructed
+    tampered entries built directly via the AuditLog API. The existing
+    TestAuditLogIntegrity class above already covers
+    verify_log_integrity() at the function level; this covers the same
+    ground end-to-end through the CLI, the level a real operator
+    actually interacts with."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def _real_log(self, tmpdir) -> tuple:
+        """Produces a REAL audit log via a real engagement + real
+        recon invocation through the actual CLI, not a hand-built
+        AuditLog. Returns (auth_path, log_path)."""
+        from redteam_toolkit.cli import cli
+
+        auth_path = Path(tmpdir) / "authorization.yml"
+        _write_auth_yaml(auth_path, scope={
+            "targets": ["198.51.100.5"], "excluded_targets": [],
+            "allowed_categories": ["recon"],
+        })
+        log_path = Path(tmpdir) / "test-2026-q1.audit.jsonl"
+
+        runner = self._runner()
+        runner.invoke(cli, [
+            "recon", "198.51.100.5", "--authorization", str(auth_path),
+            "--audit-log", str(log_path), "--modules", "port_scanner",
+        ])
+        assert log_path.exists() and log_path.stat().st_size > 0, "expected a real audit log to have been written"
+        return auth_path, log_path
+
+    def _status_audit_line(self, auth_path, log_path) -> str:
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        result = runner.invoke(cli, ["status", "--authorization", str(auth_path), "--audit-log", str(log_path)])
+        line = next((ln for ln in result.output.splitlines() if "Audit log" in ln), "")
+        return line
+
+    def test_clean_real_log_reports_ok(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            line = self._status_audit_line(auth_path, log_path)
+            assert "OK" in line
+            assert "TAMPERED" not in line
+
+    def test_sed_edited_field_reports_tampered(self):
+        """A real sed-style field edit on disk, not an API-constructed
+        tampered entry."""
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            content = log_path.read_text()
+            tampered = content.replace('"198.51.100.5"', '"10.0.0.1"', 1)
+            assert tampered != content, "sed-style replacement should have changed something"
+            log_path.write_text(tampered)
+
+            line = self._status_audit_line(auth_path, log_path)
+            assert "TAMPERED" in line
+
+    def test_deleted_line_reports_tampered(self):
+        """Adds a second real action so there's a non-final line to
+        delete, then removes it with a real line-delete operation."""
+        from redteam_toolkit.cli import cli
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            runner = self._runner()
+            runner.invoke(cli, [
+                "recon", "198.51.100.5", "--authorization", str(auth_path),
+                "--audit-log", str(log_path), "--modules", "fingerprint",
+            ])
+
+            lines = log_path.read_text().splitlines()
+            assert len(lines) >= 2
+            del lines[0]
+            log_path.write_text("\n".join(lines) + "\n")
+
+            line = self._status_audit_line(auth_path, log_path)
+            assert "TAMPERED" in line
+
+    def test_reordered_lines_reports_tampered(self):
+        from redteam_toolkit.cli import cli
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            runner = self._runner()
+            runner.invoke(cli, [
+                "recon", "198.51.100.5", "--authorization", str(auth_path),
+                "--audit-log", str(log_path), "--modules", "fingerprint",
+            ])
+
+            lines = log_path.read_text().splitlines()
+            assert len(lines) >= 2
+            lines[0], lines[1] = lines[1], lines[0]
+            log_path.write_text("\n".join(lines) + "\n")
+
+            line = self._status_audit_line(auth_path, log_path)
+            assert "TAMPERED" in line
+
+    def test_truncation_of_most_recent_entry_is_a_known_undetectable_gap(self):
+        """Documents a real, confirmed limitation found during this
+        audit: deleting the LAST (most recent) line of a real log
+        leaves the remaining chain perfectly valid, since nothing
+        downstream references what's missing — this is inherent to a
+        pure hash chain with no external anchor (the same way deleting
+        the most recent git commits, with no other clone holding them,
+        leaves the remaining history looking perfectly normal).
+
+        This test deliberately asserts the CURRENT (limited) behavior
+        rather than silently ignoring it, so this gap can't regress
+        further (e.g. into reporting a wrong/crashing result) without a
+        test failing, and so any future improvement to address this
+        (e.g. an external checkpoint mechanism) has a clear test to
+        update instead of accidentally "fixing" this assertion away
+        without noticing what it represents. See verify_log_integrity's
+        own docstring for the full explanation and the entry_count field
+        added specifically so operators can track this out-of-band."""
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            lines = log_path.read_text().splitlines()
+            assert len(lines) == 1
+
+            del lines[-1]
+            log_path.write_text("\n".join(lines) + "\n" if lines else "")
+
+            line = self._status_audit_line(auth_path, log_path)
+            # Confirmed current behavior: truncating to an empty log
+            # reports "none yet", not "TAMPERED" -- there's no chain
+            # left to walk at all, so this is technically correct per
+            # verify_log_integrity's own contract (an absent/empty log
+            # is valid), but it's the same underlying gap: a fully
+            # truncated log gives no signal that entries used to exist.
+            assert "TAMPERED" not in line
+
+    def test_entry_count_reflects_only_verified_entries_before_a_break(self):
+        """verify_log_integrity's entry_count return value, added as
+        part of this audit, should reflect entries successfully
+        verified BEFORE a break was found -- not the raw line count of
+        the (possibly tampered) file -- giving an operator an accurate
+        sense of how much of the log they can actually trust."""
+        from redteam_toolkit.cli import cli
+        with tempfile.TemporaryDirectory() as d:
+            auth_path, log_path = self._real_log(d)
+            runner = self._runner()
+            runner.invoke(cli, [
+                "recon", "198.51.100.5", "--authorization", str(auth_path),
+                "--audit-log", str(log_path), "--modules", "fingerprint",
+            ])
+            runner.invoke(cli, [
+                "recon", "198.51.100.5", "--authorization", str(auth_path),
+                "--audit-log", str(log_path), "--modules", "endpoint_discovery",
+            ])
+
+            lines = log_path.read_text().splitlines()
+            assert len(lines) >= 3
+            # Tamper with the SECOND entry -- the first should still
+            # verify successfully before the break is hit.
+            tampered_second = json.loads(lines[1])
+            tampered_second["target"] = "tampered"
+            lines[1] = json.dumps(tampered_second)
+            log_path.write_text("\n".join(lines) + "\n")
+
+            result = runner.invoke(cli, ["status", "--authorization", str(auth_path), "--audit-log", str(log_path)])
+            # Checked against the full output (collapsing Rich's terminal-
+            # width line wrapping), not a single isolated line, since the
+            # wrap point can legitimately fall in the middle of this
+            # phrase depending on CliRunner's simulated terminal width.
+            collapsed = " ".join(result.output.split())
+            assert "TAMPERED" in collapsed
+            assert "chain broken at line 2" in collapsed
+            assert "1 entries verified before the break" in collapsed
 
 
 # ── Engagement gate ───────────────────────────────────────────────────────────

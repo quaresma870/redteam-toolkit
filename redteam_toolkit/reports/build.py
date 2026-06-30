@@ -25,11 +25,7 @@ def build_report(
         ensure_all_scored(mr.findings)
 
     log_path = Path(audit_log_path)
-    integrity_ok, _ = verify_log_integrity(log_path)
-    entry_count = 0
-    if log_path.exists():
-        with open(log_path, encoding="utf-8") as f:
-            entry_count = sum(1 for line in f if line.strip())
+    integrity_ok, _, entry_count = verify_log_integrity(log_path)
 
     # Persist a snapshot so the dashboard (which has no access to the
     # original authorization.yml or audit log file) can reconstruct an

@@ -297,12 +297,18 @@ def status(authorization, audit_log):
     )
 
     if log_path.exists():
-        valid, broken_line = verify_log_integrity(log_path)
-        entry_count = sum(1 for line in open(log_path, encoding="utf-8") if line.strip())
+        valid, broken_line, entry_count = verify_log_integrity(log_path)
         if valid:
-            console.print(f"[green]Audit log: OK[/green] — {entry_count} entries, integrity verified")
+            console.print(
+                f"[green]Audit log: OK[/green] — {entry_count} entries, integrity verified "
+                f"[dim](hash-chaining detects edits/reordering, but not truncation of the most "
+                f"recent entries — see README)[/dim]"
+            )
         else:
-            console.print(f"[red]Audit log: TAMPERED[/red] — chain broken at line {broken_line}")
+            console.print(
+                f"[red]Audit log: TAMPERED[/red] — chain broken at line {broken_line} "
+                f"({entry_count} entries verified before the break)"
+            )
     else:
         console.print("[dim]Audit log: none yet[/dim]")
 
