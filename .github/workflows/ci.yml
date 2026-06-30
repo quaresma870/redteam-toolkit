@@ -154,9 +154,22 @@ jobs:
           echo "::group::diff previous latest -- both text and --json"
           # diff exits 1 when it finds a new CRITICAL/HIGH finding (by
           # design, for CI use) -- the SQLi detection above is exactly
-          # such a finding, so this exit is expected here, hence || true.
+          # such a finding, so THAT exit is expected here, hence || true
+          # on the plain-text call. The --json call's own validation must
+          # NOT be swallowed the same way: capture its output to a file
+          # first (ignoring diff's own regression-exit there too), then
+          # validate that file with json.load as a SEPARATE command with
+          # its own real exit code -- a combined `cmd1 | cmd2 || true`
+          # pipeline would silently swallow a genuine JSON parse failure
+          # from cmd2 along with cmd1's expected non-zero exit, which is
+          # exactly the gap that let a reintroduced version of the diff
+          # --json corruption bug pass this job silently during
+          # verification (caught only by the separate unit test) -- not
+          # assumed safe from reading the script, fixed after actually
+          # observing that gap on real CI.
           $RT diff previous latest --authorization authorization.yml --db engagements.db || true
-          $RT diff previous latest --authorization authorization.yml --db engagements.db --json | python3 -c "import json, sys; json.load(sys.stdin)" || true
+          $RT diff previous latest --authorization authorization.yml --db engagements.db --json > /tmp/diff-output.json || true
+          python3 -c "import json; json.load(open('/tmp/diff-output.json'))"
           echo "::endgroup::"
 
           echo "::group::report --format both"
