@@ -1126,6 +1126,56 @@ class TestDiffCLI:
             assert len(data["resolved"]) == 1
             assert data["resolved"][0]["title"] == "Open port: 22"
 
+    def test_diff_json_output_with_long_description_stays_valid_json(self):
+        """Regression test for a real, reproduced bug found via the
+        sibling integration-test-job audit: `diff --json` used
+        `console.print(json.dumps(...))` -- Rich wraps text to the
+        terminal width by default, which silently injects real newline
+        characters into the middle of long JSON string values (a
+        finding's description or evidence text), producing output that
+        LOOKS like JSON but fails `json.loads()`. The existing test
+        above never caught this because its seeded findings all have
+        short titles with no long description text to wrap. This test
+        deliberately uses a description long enough to exceed a typical
+        terminal width (80 cols) on a single logical line, confirmed
+        by actually reproducing the JSONDecodeError before fixing it,
+        not assumed from reading the code."""
+        from redteam_toolkit.cli import cli
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+
+            long_description = (
+                "Injecting a single quote into the 'id' parameter produced a "
+                "database error signature consistent with a SQL injection "
+                "vulnerability — this description is deliberately long enough "
+                "to exceed a typical 80-column terminal width on its own."
+            )
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            run1 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+            run2 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(
+                module="sqli_detection",
+                findings=[Finding(
+                    module="sqli_detection", title="Possible SQL injection in parameter 'id'",
+                    severity=Severity.CRITICAL, category=FindingCategory.ACTIVE, target="x",
+                    description=long_description,
+                )],
+            ))
+
+            result = runner.invoke(cli, [
+                "diff", str(run1), str(run2), "--authorization", str(auth_path), "--db", db_path, "--json",
+            ])
+            import json as _json
+            # This is the actual regression check: must not raise JSONDecodeError.
+            data = _json.loads(result.output)
+            assert data["new"][0]["description"] == long_description
+
     def test_diff_missing_db_errors_clearly(self):
         from redteam_toolkit.cli import cli
         runner = self._runner()

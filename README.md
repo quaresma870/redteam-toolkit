@@ -279,6 +279,29 @@ redteam-toolkit/
 
 ---
 
+## CI
+
+On every push/PR: lint → unit tests (390+, mocked/isolated) → build the real
+wheel, install it in a clean venv, and run a **real integration test** —
+every README-documented command, against the actual installed CLI via real
+subprocess calls, not `CliRunner` against the dev source tree: `init` for
+all three engagement templates, `validate-scope`, `status`,
+`recon`/`vuln-id`/`active` against a real mock target (including
+`--targets-file` and `--session-header`), `diff` (text and `--json`),
+`report --format both`, and `serve` with real HTTP requests against its
+actual API routes. A separate `e2e-smoke-test` job covers a similar flow via
+`CliRunner` for faster iteration during development.
+
+This exists because two real bugs (the `serve` dashboard-dependency
+message, and a JSON-corrupting `console.print()` call in `diff --json`)
+both shipped past 390+ passing unit tests, because those tests exercise
+the CLI in-process, never a real subprocess against a real installed
+wheel. Confirmed this job actually catches a regression by temporarily
+reintroducing the JSON corruption bug and watching both this job and the
+relevant unit test fail, before relying on it.
+
+---
+
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---

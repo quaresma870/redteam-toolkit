@@ -784,7 +784,17 @@ def diff(run1, run2, authorization, db, json_out):
 
     if json_out:
         import json as _json
-        console.print(_json.dumps(result.to_dict(), indent=2))
+        # Deliberately plain print(), NOT console.print(): Rich wraps
+        # text to the terminal width by default, which silently injects
+        # real newline characters into the middle of long JSON string
+        # values (e.g. a finding's description or evidence text) --
+        # producing output that LOOKS like JSON but fails to parse,
+        # confirmed by actually piping this through json.load() and
+        # getting a real JSONDecodeError, not assumed as a risk from
+        # reading the code. Anything piping --json into a parser (which
+        # is the entire point of the flag) would have silently broken on
+        # any finding with a long enough description/evidence string.
+        print(_json.dumps(result.to_dict(), indent=2))
     else:
         _print_diff(result)
 
