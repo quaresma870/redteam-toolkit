@@ -107,14 +107,36 @@ class AuditLog:
         return entries
 
 
-def verify_log_integrity(path: str | Path) -> tuple[bool, int | None]:
-    """Walk the hash chain from the start. Returns (is_valid, first_broken_line)
-    — first_broken_line is None when the log is valid (including an empty/absent log)."""
+def verify_log_integrity(path: str | Path) -> tuple[bool, int | None, int]:
+    """Walk the hash chain from the start. Returns
+    (is_valid, first_broken_line, entry_count) — first_broken_line is None
+    when the log is valid (including an empty/absent log); entry_count is
+    the number of entries actually present and verified.
+
+    IMPORTANT LIMITATION, confirmed by actually manually editing a real
+    log file with sed (not constructing tampered entries via the
+    AuditLog API) before documenting this, not assumed from reading the
+    code: this detects modification of any entry's content, deletion or
+    insertion of any entry NOT at the very end, and reordering of any
+    two entries — all of those break the forward hash chain from that
+    point on. It CANNOT detect truncation: deleting the most recent
+    entries leaves the remaining chain perfectly valid from genesis to
+    the new (earlier) end, since there's nothing after the cut to
+    reference what's missing. This is mathematically inherent to a pure
+    hash-chain with no external anchor — the same limitation applies to
+    e.g. git commit history, which is why git remotes and a second
+    independent clone exist as that anchor. The returned entry_count is
+    exposed specifically so an operator who wants real truncation
+    detection can independently record it out-of-band (a client
+    deliverable, a ticket comment, a value sent to an external log
+    aggregator) and later notice if a re-check reports fewer entries
+    than expected, which this function alone cannot do for them."""
     path = Path(path)
     if not path.exists():
-        return True, None
+        return True, None, 0
 
     prev_hash = _GENESIS_HASH
+    entry_count = 0
     with open(path, encoding="utf-8") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
@@ -123,7 +145,7 @@ def verify_log_integrity(path: str | Path) -> tuple[bool, int | None]:
             entry = json.loads(line)
 
             if entry.get("prev_hash") != prev_hash:
-                return False, line_num
+                return False, line_num, entry_count
 
             recomputed = AuditLogEntry(
                 timestamp=entry["timestamp"],
@@ -137,8 +159,9 @@ def verify_log_integrity(path: str | Path) -> tuple[bool, int | None]:
             ).compute_hash()
 
             if recomputed != entry.get("entry_hash"):
-                return False, line_num
+                return False, line_num, entry_count
 
             prev_hash = entry["entry_hash"]
+            entry_count += 1
 
-    return True, None
+    return True, None, entry_count

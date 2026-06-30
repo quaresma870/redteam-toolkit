@@ -202,16 +202,36 @@ security-sensitive in this toolkit:**
 ### The audit log
 
 Every action — allowed or refused — is recorded in `<engagement_id>.audit.jsonl`,
-hash-chained so that editing, deleting, or reordering any historical entry
+hash-chained so that editing, deleting, or reordering any *historical* entry
 is detectable:
 
 ```python
 from redteam_toolkit.core.audit_log import verify_log_integrity
 
-valid, broken_at_line = verify_log_integrity("acme-2026-q2.audit.jsonl")
+valid, broken_at_line, entry_count = verify_log_integrity("acme-2026-q2.audit.jsonl")
 ```
 
-`redteam-toolkit status` runs this check and reports it automatically.
+`redteam-toolkit status` runs this check and reports it automatically — verified
+end-to-end against a real, manually-edited log file (a sed-style field edit, a
+deleted line, and reordered lines), not just unit-tested against constructed
+data:
+
+```
+$ redteam-toolkit status --authorization authorization.yml
+...
+Audit log: TAMPERED — chain broken at line 2 (1 entries verified before the break)
+```
+
+**Known limitation, confirmed by the same audit**: hash-chaining detects
+modification, insertion, or reordering of any entry — but it **cannot detect
+truncation** (deletion of the *most recent* entries), since there's nothing
+after the cut left to reference what's missing. This is mathematically
+inherent to a pure hash chain with no external anchor — the same limitation
+applies to e.g. `git` commit history, which is why a remote and a second
+independent clone exist as that anchor. If you need real protection against
+truncation specifically, independently record the `entry_count` value
+out-of-band after key milestones (a client deliverable, a ticket comment, a
+value shipped to an external log aggregator) and compare it on a later check.
 
 ---
 
