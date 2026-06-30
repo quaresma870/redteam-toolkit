@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.2
+- feat: **CI integration-test tier** — extended the build job's minimal smoke test into a real
+  integration test covering every README-documented command against the actual installed wheel via
+  real subprocess calls: `init` for all three engagement templates, `validate-scope`, `status`,
+  `recon`/`vuln-id`/`active` against a real mock target (including `--targets-file` and
+  `--session-header`), `diff` (text and `--json`), `report --format both`, and `serve` with real
+  HTTP requests — closes #44.
+- fix: **`diff --json` output was real, reproduced JSON corruption** — `console.print(json.dumps(...))`
+  wraps text to the terminal width by default, silently injecting real newline characters into the
+  middle of long JSON string values (a finding's description or evidence text), producing output
+  that fails `json.loads()`. Fixed by using plain `print()` for this output path. Found by piping
+  the new integration script's own `--json` output through a real JSON parser, not by reading the
+  code — and verified to actually catch a regression on real CI before relying on it, including a
+  bug in the verification script itself that initially swallowed the parse failure alongside an
+  unrelated expected non-zero exit.
+
 ### v0.7.1
 - fix: **`serve`'s missing-dependency error message had the same bug just found and fixed in the
   sibling secureaudit repo** — only `import uvicorn` was guarded (a present-uvicorn/absent-fastapi
