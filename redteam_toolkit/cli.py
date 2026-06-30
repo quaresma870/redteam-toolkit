@@ -794,7 +794,7 @@ def diff(run1, run2, authorization, db, json_out):
         # reading the code. Anything piping --json into a parser (which
         # is the entire point of the flag) would have silently broken on
         # any finding with a long enough description/evidence string.
-        console.print(_json.dumps(result.to_dict(), indent=2))
+        print(_json.dumps(result.to_dict(), indent=2))
     else:
         _print_diff(result)
 
