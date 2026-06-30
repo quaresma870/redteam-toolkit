@@ -3,6 +3,11 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.4
+- feat: **`verify_log_integrity()` now returns `entry_count`** as a third tuple element — the number of entries actually verified, accurate even on a tampered log. `status` reports this on both the OK and TAMPERED paths.
+- fix: **found and documented a real, confirmed audit-log tamper-detection gap** — hash-chaining cannot detect truncation (deletion of the most recent entries), since nothing downstream references what's missing. Mathematically inherent to a pure hash chain without an external anchor (the same limitation `git` commit history has). Confirmed by actually deleting the last line of a real audit log and watching `status` report OK — closes #46. Documented prominently in both the docstring and README, with `entry_count` positioned as the practical out-of-band mitigation.
+- test: tamper detection verified end-to-end through the real `status` command against a real audit log (produced by a real `recon` invocation), manually edited with sed-style operations — not constructed tampered entries.
+
 ### v0.7.3
 - feat: **documentation freshness check** — new `TestDocumentationFreshness` confirms every source module file is mentioned in the README's project structure tree and every `--modules` example references a real, registered module name — closes #45. Immediately caught a real, pre-existing gap (`recon/base.py` was missing from the tree) and fixed it.
 
