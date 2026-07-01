@@ -1665,3 +1665,225 @@ class TestActiveMultiTargetConfirmInteraction:
             f"Expected exactly 1 'canary.shutdown()' call (in the finally block "
             f"wrapping the whole multi-target loop), got {shutdown_count}."
         )
+
+
+class TestReportContentCorrectness:
+    """Issue #48: verifies that the HTML and PDF reports contain the
+    correct engagement data — not just that the file exists and is
+    non-empty. The existing report tests only checked file creation;
+    this checks that specific, known content (engagement_id,
+    finding title, severity, client name) actually appears in the
+    rendered output.
+
+    Uses a fully controlled EngagementReport fixture with known values
+    so any content-correctness regression produces an obvious,
+    actionable assertion failure rather than a vague 'file was
+    generated' pass."""
+
+    def _make_report(self) -> EngagementReport:
+        from datetime import UTC, datetime
+
+        from redteam_toolkit.core.models import (
+            EngagementReport,
+            Finding,
+            FindingCategory,
+            ModuleResult,
+            Severity,
+        )
+        finding = Finding(
+            module="sqli_detection",
+            title="SQL injection in parameter 'id'",
+            severity=Severity.CRITICAL,
+            category=FindingCategory.ACTIVE,
+            target="http://app.acme-staging.com/users",
+            description="Injecting a quote into 'id' produced a database error.",
+            evidence="Possible SQL injection: sqlite3.OperationalError",
+            remediation="Use parameterised queries.",
+            cvss_score=9.8,
+        )
+        mr = ModuleResult(module="sqli_detection", findings=[finding], duration_ms=42.0)
+        return EngagementReport(
+            engagement_id="acme-2026-q2",
+            target_scope=["198.51.100.0/24", "*.acme-staging.com"],
+            authorized_by="Jane Doe, CISO",
+            client="Acme Corp",
+            window_start="2026-07-01T09:00:00+00:00",
+            window_end="2026-07-14T17:00:00+00:00",
+            started_at=datetime(2026, 7, 1, 9, 0, 0, tzinfo=UTC),
+            module_results=[mr],
+            audit_log_integrity_ok=True,
+            audit_log_entry_count=7,
+        )
+
+    def test_html_contains_engagement_id(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "acme-2026-q2" in content
+
+    def test_html_contains_client_name(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "Acme Corp" in content
+
+    def test_html_contains_finding_title(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "SQL injection in parameter" in content
+
+    def test_html_contains_critical_severity(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "CRITICAL" in content
+
+    def test_html_contains_target(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "acme-staging.com" in content
+
+    def test_html_authorized_by_shown(self):
+        from redteam_toolkit.reports.html import write_html
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            content = out.read_text()
+            assert "Jane Doe" in content
+
+    def test_html_is_parseable_as_html(self):
+        """Confirms the output is actually valid HTML structure
+        (html/head/body tags present), not just text-in-a-file."""
+        from html.parser import HTMLParser
+
+        from redteam_toolkit.reports.html import write_html
+
+        class TagCollector(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.tags = set()
+            def handle_starttag(self, tag, attrs):
+                self.tags.add(tag)
+
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.html"
+            write_html(report, out)
+            parser = TagCollector()
+            parser.feed(out.read_text())
+            assert "html" in parser.tags
+            assert "body" in parser.tags
+            assert "table" in parser.tags
+
+    def test_pdf_is_valid_pdf_with_correct_header(self):
+        from redteam_toolkit.reports.pdf import write_pdf
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.pdf"
+            write_pdf(report, out)
+            header = out.read_bytes()[:5]
+            assert header == b"%PDF-", f"PDF header wrong: {header!r}"
+
+    def test_pdf_metadata_contains_engagement_id(self):
+        """PDF document metadata (Title field in the /Info dict) must
+        contain the engagement ID -- confirmed that this is
+        in plain-text in the raw bytes before relying on it, unlike
+        the page content which is deflate-compressed."""
+        from redteam_toolkit.reports.pdf import write_pdf
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.pdf"
+            write_pdf(report, out)
+            raw = out.read_bytes()
+            assert b"acme-2026-q2" in raw, (
+                "Engagement ID not found in PDF raw bytes -- PDF metadata not being set. "
+                "Expected to find it in the /Title field of the /Info dict."
+            )
+
+    def test_pdf_metadata_contains_client_via_subject(self):
+        """PDF /Subject field contains the client name."""
+        from redteam_toolkit.reports.pdf import write_pdf
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.pdf"
+            write_pdf(report, out)
+            raw = out.read_bytes()
+            assert b"Acme Corp" in raw, (
+                "Client name not found in PDF raw bytes -- expected in /Subject field."
+            )
+
+    def test_pdf_page_content_accessible_via_author_metadata(self):
+        """The PDF's Author metadata field (from the /Info dict in plain
+        text) contains the authorized_by value, confirming the actual
+        report data is embedded in the file in at least one accessible,
+        verifiable location. The page content itself is encoded as
+        ASCII85/zlib (reportlab's default), which requires a 2-step
+        decode not covered by stdlib zlib alone -- the metadata tests
+        above and the CLI end-to-end test below are the right level for
+        confirming content is correct without depending on implementation
+        details of reportlab's internal encoding choices."""
+        from redteam_toolkit.reports.pdf import write_pdf
+        report = self._make_report()
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "report.pdf"
+            write_pdf(report, out)
+            raw = out.read_bytes()
+            # Author field is in plain text in the /Info dict
+            assert b"Jane Doe" in raw
+
+    def test_report_produced_by_real_cli_command_has_correct_content(self):
+        """End-to-end: the `report` CLI command, reading from a real
+        persisted DB (written by a real recon invocation through the
+        real CLI), produces an HTML file whose content matches the
+        actual engagement's data — not just 'file exists'."""
+        from redteam_toolkit.cli import cli
+        runner = self.__class__._runner(self)
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path, scope={
+                "targets": ["198.51.100.5"],
+                "excluded_targets": [], "allowed_categories": ["recon"],
+            })
+            db_path = str(Path(d) / "eng.db")
+            runner.invoke(cli, [
+                "recon", "198.51.100.5",
+                "--authorization", str(auth_path),
+                "--modules", "port_scanner",
+                "--db", db_path,
+            ])
+            out_base = str(Path(d) / "report")
+            result = runner.invoke(cli, [
+                "report",
+                "--authorization", str(auth_path),
+                "--db", db_path,
+                "--format", "html",
+                "--output", out_base,
+            ])
+            assert result.exit_code == 0, result.output
+            html_path = Path(d) / "report-report.html"
+            assert html_path.exists() and html_path.stat().st_size > 1000
+            content = html_path.read_text()
+            assert "test-2026-q1" in content   # the engagement_id from _write_auth_yaml
+            assert "Example Corp" in content   # the client from _write_auth_yaml
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()

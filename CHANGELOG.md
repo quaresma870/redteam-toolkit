@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.6
+- feat: **PDF/HTML report content verified** — closes #48. 12 new tests confirming engagement_id, client, finding title, severity, and authorized_by all appear correctly in rendered output, not just that the file was created. Found a real bug: PDF reports were missing document metadata (`title`/`author`/`subject` not passed to `SimpleDocTemplate()`), so the `/Info` dict showed `(anonymous)` and `(unspecified)` — fixed by passing engagement data through. Also confirmed that reportlab uses ASCII85+FlateDecode for page content (not plain deflate), so stdlib `zlib` alone cannot decompress it — content verification is done via the `/Info` dict metadata instead, which is in plain text in the raw bytes.
+
 ### v0.7.5
 - feat: **`active` command multi-target + `--confirm` interaction verified** — closes #47. Confirmed: `--confirm` is a session gate (exactly one `active_tier_confirmation` audit entry for a 2-target run), wrong `--confirm` is refused before any module call for any target, scope checking still happens per-target inside the loop, and the canary listener is shared across all targets (one `LocalCanaryListener` outside the loop, one `shutdown()` in the wrapping `finally`).
 
