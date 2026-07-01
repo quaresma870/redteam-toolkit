@@ -57,6 +57,9 @@ def write_pdf(report: EngagementReport, path: str | Path) -> None:
     doc = SimpleDocTemplate(
         str(path), pagesize=A4,
         leftMargin=2 * cm, rightMargin=2 * cm, topMargin=2 * cm, bottomMargin=2 * cm,
+        title=f"Engagement Report — {report.engagement_id}",
+        author=report.authorized_by,
+        subject=f"Penetration test report for {report.client}",
     )
 
     counts = report.counts_by_severity()
