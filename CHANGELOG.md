@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.7
+- feat: **exhaustive per-module functional audit** — every module in `recon`/`vuln-id`/`active` verified end-to-end via its actual class and `run()` method, using injected dependencies so no real network calls are needed — closes #43. Specific new tests: `fingerprint` with banner-grab injection, `active_dns`/`zone_transfer` with resolver/AXFR injection (confirming the real 1-arg/2-arg call signatures before writing the tests, not assumed), `cve_correlation` with query injection, and `default_credentials` both with and without `opt_in`. Meta-tests loop all 8 recon and 5 active modules. No functional bugs found — the value is permanent coverage.
+
 ### v0.7.6
 - feat: **PDF/HTML report content verified** — closes #48. 12 new tests confirming engagement_id, client, finding title, severity, and authorized_by all appear correctly in rendered output, not just that the file was created. Found a real bug: PDF reports were missing document metadata (`title`/`author`/`subject` not passed to `SimpleDocTemplate()`), so the `/Info` dict showed `(anonymous)` and `(unspecified)` — fixed by passing engagement data through. Also confirmed that reportlab uses ASCII85+FlateDecode for page content (not plain deflate), so stdlib `zlib` alone cannot decompress it — content verification is done via the `/Info` dict metadata instead, which is in plain text in the raw bytes.
 
