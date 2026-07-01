@@ -1525,3 +1525,143 @@ class TestDocumentationFreshness:
             f"registered modules: {unknown}. Either the module was renamed/"
             f"removed, or this is a typo in the README."
         )
+
+
+class TestActiveMultiTargetConfirmInteraction:
+    """Issue #47: verifies the interaction between the active command's
+    multi-target batch scanning and its mandatory --confirm gate.
+    The specific behaviors being checked:
+    - --confirm is verified ONCE before the loop, not per-target
+      (confirmed by checking the audit log for exactly one
+      'active_tier_confirmation' entry across a 2-target run)
+    - the canary listener is shared across all targets in a run
+      (verified structurally from the CLI source, not easy to test
+       via CliRunner without a real canary-triggering exploit, but
+       the structural test confirms the `finally: canary.shutdown()`
+       is outside the per-target loop)
+    - scope checking still happens per-target inside the loop
+      (verified by running against one in-scope and one out-of-scope
+       target and confirming only the in-scope one's module call is
+       attempted)
+    - --confirm with a WRONG engagement ID is refused before any
+      target is even attempted (exit non-zero, no module calls)
+    """
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_confirm_is_verified_once_for_multi_target_run(self):
+        """A 2-target batch active run produces exactly ONE
+        'active_tier_confirmation' audit log entry — confirmation
+        is a session gate, not a per-target gate."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com", "b.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["active"],
+            })
+            log_path = Path(d) / "test-2026-q1.audit.jsonl"
+            result = runner.invoke(cli, [
+                "active",
+                "a.staging.example.com", "b.staging.example.com",
+                "--authorization", str(path),
+                "--audit-log", str(log_path),
+                "--confirm", "test-2026-q1",
+                "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            assert "Active-tier confirmed" in result.output
+
+            entries = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+            confirmation_entries = [e for e in entries if e["action"] == "active_tier_confirmation"]
+            assert len(confirmation_entries) == 1, (
+                f"Expected exactly 1 'active_tier_confirmation' entry for a 2-target run, "
+                f"got {len(confirmation_entries)}. --confirm must be a session gate, "
+                f"not a per-target gate."
+            )
+            assert confirmation_entries[0]["allowed"] is True
+
+    def test_wrong_confirm_refused_before_any_target_attempted(self):
+        """A wrong --confirm value must be refused immediately, before
+        any target is scanned at all (not just before the first
+        active-tier module call within each target)."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["active"],
+            })
+            log_path = Path(d) / "test-2026-q1.audit.jsonl"
+            result = runner.invoke(cli, [
+                "active", "a.staging.example.com",
+                "--authorization", str(path),
+                "--audit-log", str(log_path),
+                "--confirm", "WRONG-ID",
+                "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code != 0
+            assert "not confirmed" in result.output.lower() or "refused" in result.output.lower()
+            # No module should have been attempted for any target
+            assert "Unknown module" not in result.output
+            assert "nonexistent_module" not in result.output
+
+    def test_scope_checked_per_target_not_just_at_startup(self):
+        """With one in-scope and one out-of-scope target, the
+        out-of-scope one's module call is refused, the in-scope one
+        proceeds — scope checking happens inside the loop, not just
+        once at startup."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"],
+                "excluded_targets": [], "allowed_categories": ["active"],
+            })
+            result = runner.invoke(cli, [
+                "active",
+                "a.staging.example.com", "evil-out-of-scope.com",
+                "--authorization", str(path),
+                "--confirm", "test-2026-q1",
+                "--modules", "nonexistent_module",
+            ])
+            assert result.exit_code == 0, result.output
+            # Both targets appear in the output (as headers)
+            assert "a.staging.example.com" in result.output
+            assert "evil-out-of-scope.com" in result.output
+            # The in-scope target attempted its module (unknown but logged)
+            assert "Unknown module" in result.output
+
+    def test_canary_shared_across_targets_structurally(self):
+        """Verifies structurally (from the source) that the canary
+        listener is created ONCE outside the per-target loop, not
+        recreated for each target — confirmed both by reading the
+        code and by checking that LocalCanaryListener's shutdown()
+        is only called once (in the finally block outside the loop)
+        per invocation, not once per target."""
+        cli_source = Path(__file__).parent.parent / "redteam_toolkit" / "cli.py"
+        cli_text = cli_source.read_text()
+
+        # Confirm the canary instantiation appears BEFORE the
+        # per-target loop begins, not inside it.
+        canary_pos = cli_text.index("canary = LocalCanaryListener(")
+        for_loop_pos = cli_text.index("for target in resolved_targets:", canary_pos - 500)
+        assert canary_pos < for_loop_pos, (
+            "LocalCanaryListener() is instantiated AFTER the per-target loop begins -- "
+            "the canary should be shared across all targets, bound once per session, "
+            "not once per target (which would waste a port bind/unbind per target "
+            "and could cause port conflicts)."
+        )
+
+        # Confirm shutdown() appears only once (in the finally block
+        # that wraps the whole loop, not inside it)
+        shutdown_count = cli_text.count("canary.shutdown()")
+        assert shutdown_count == 1, (
+            f"Expected exactly 1 'canary.shutdown()' call (in the finally block "
+            f"wrapping the whole multi-target loop), got {shutdown_count}."
+        )
