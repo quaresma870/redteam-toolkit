@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.7.5
+- feat: **`active` command multi-target + `--confirm` interaction verified** — closes #47. Confirmed: `--confirm` is a session gate (exactly one `active_tier_confirmation` audit entry for a 2-target run), wrong `--confirm` is refused before any module call for any target, scope checking still happens per-target inside the loop, and the canary listener is shared across all targets (one `LocalCanaryListener` outside the loop, one `shutdown()` in the wrapping `finally`).
+
 ### v0.7.4
 - feat: **`verify_log_integrity()` now returns `entry_count`** as a third tuple element — the number of entries actually verified, accurate even on a tampered log. `status` reports this on both the OK and TAMPERED paths.
 - fix: **found and documented a real, confirmed audit-log tamper-detection gap** — hash-chaining cannot detect truncation (deletion of the most recent entries), since nothing downstream references what's missing. Mathematically inherent to a pure hash chain without an external anchor (the same limitation `git` commit history has). Confirmed by actually deleting the last line of a real audit log and watching `status` report OK — closes #46. Documented prominently in both the docstring and README, with `entry_count` positioned as the practical out-of-band mitigation.
