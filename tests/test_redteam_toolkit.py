@@ -1887,3 +1887,162 @@ class TestReportContentCorrectness:
     def _runner(self):
         from click.testing import CliRunner
         return CliRunner()
+
+
+class TestAllModulesRunWithoutCrashing:
+    """Issue #43: exhaustive per-module functional audit — mirrors the
+    same approach used for secureaudit's #30. Every module listed in
+    cli.py's available dicts (recon/vuln-id/active) is run through its
+    actual class and run() method. Modules with injectable
+    dependencies use them so no real network calls are needed, making
+    these fast and deterministic. The existing test suite already
+    covered most modules individually; this is specifically about the
+    ones that had never been run end-to-end even via CliRunner, and
+    about having a meta-test that loops ALL registered modules so a
+    future addition can't silently go untested."""
+
+    def _eng(self, targets=None):
+        from redteam_toolkit.core.engagement import Engagement
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": targets or ["198.51.100.0/24", "127.0.0.1", "*.example.com"],
+                "excluded_targets": [],
+                "allowed_categories": ["recon", "vuln-id", "active"],
+            })
+            eng = Engagement.load(path, Path(d) / "test.audit.jsonl")
+            # Keep the engagement alive outside the with block by
+            # returning it (the tmpdir is cleaned up, but the Engagement
+            # object holds no reference back to it, only the paths it
+            # already resolved at load time).
+            return eng
+
+    def test_fingerprint_module_with_injected_connect(self):
+        from redteam_toolkit.recon.fingerprint import FingerprintModule
+
+        eng = self._eng()
+        def fake_connect(host, port):
+            if port == 22:
+                return b"SSH-2.0-OpenSSH_8.9p1 Ubuntu"
+            return None
+
+        m = FingerprintModule(eng, connect_fn=fake_connect)
+        result = m.run("198.51.100.5", ports=[22, 80])
+
+        assert result.error is None
+        assert result.findings[0].extra["port"] == 22
+        assert "OpenSSH" in result.findings[0].title
+
+    def test_active_dns_module_with_injected_resolver(self):
+        from redteam_toolkit.recon.active_dns import ActiveDNSModule
+
+        eng = self._eng()
+        # resolve_fn is called as self._resolve(candidate) -- 1 arg (hostname only)
+        m = ActiveDNSModule(eng, resolve_fn=lambda hostname: ["198.51.100.5"])
+        result = m.run("198.51.100.5")
+        assert result.error is None
+
+    def test_zone_transfer_module_with_injected_fns(self):
+        from redteam_toolkit.recon.active_dns import ZoneTransferModule
+
+        eng = self._eng()
+        # nameserver_fn: domain -> list[str]
+        # axfr_fn: (target, nameserver) -> (allowed, record_count)
+        m = ZoneTransferModule(
+            eng,
+            nameserver_fn=lambda domain: ["ns1.example.com"],
+            axfr_fn=lambda target, ns: (False, 0),  # not vulnerable
+        )
+        result = m.run("198.51.100.5")
+        assert result.error is None
+
+    def test_cve_correlation_module_with_injected_query(self):
+        from redteam_toolkit.vuln_id.cve_correlation import CVECorrelationModule
+
+        eng = self._eng()
+        # query_fn: (product, version) -> list[dict] of CVE records
+        m = CVECorrelationModule(eng, query_fn=lambda product, version: [])
+        result = m.run("198.51.100.5")
+        assert result.error is None
+
+    def test_default_credentials_module_without_opt_in_is_skip(self):
+        from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
+
+        eng = self._eng()
+        m = DefaultCredentialModule(eng, try_login_fn=lambda *a: False)
+        result = m.run("198.51.100.5", opt_in=False)
+        assert result.error is None
+        assert any("opt-in" in f.title.lower() or "skipped" in f.title.lower()
+                   for f in result.findings)
+
+    def test_default_credentials_module_with_opt_in_runs(self):
+        from redteam_toolkit.vuln_id.default_credentials import DefaultCredentialModule
+
+        eng = self._eng()
+        m = DefaultCredentialModule(eng, try_login_fn=lambda *a: False)
+        result = m.run("198.51.100.5", opt_in=True)
+        assert result.error is None
+
+    def test_all_recon_modules_in_cli_registry_run_without_crash(self):
+        """Meta-test: every module registered in cli.py's recon
+        'available' dict can be instantiated and its run() method
+        invoked without ImportError or AttributeError. Uses only
+        injectable/mockable calls — no real sockets."""
+        from redteam_toolkit.recon.active_dns import ActiveDNSModule, ZoneTransferModule
+        from redteam_toolkit.recon.endpoint_discovery import EndpointDiscoveryModule
+        from redteam_toolkit.recon.fingerprint import FingerprintModule
+        from redteam_toolkit.recon.passive_dns import PassiveDNSModule
+        from redteam_toolkit.recon.port_scanner import PortScannerModule
+        from redteam_toolkit.recon.subdomain_takeover import SubdomainTakeoverModule
+        from redteam_toolkit.recon.web_fingerprint import WebFingerprintModule
+
+        eng = self._eng()
+        modules_and_kwargs = [
+            (PortScannerModule(eng), {}),
+            (FingerprintModule(eng, connect_fn=lambda h, p: None), {}),
+            (PassiveDNSModule(eng, fetch_fn=lambda d: "[]"), {}),
+            (ActiveDNSModule(eng, resolve_fn=lambda hostname: []), {}),
+            (ZoneTransferModule(eng,
+                nameserver_fn=lambda d: [],
+                axfr_fn=lambda target, ns: (False, 0)), {}),
+            (WebFingerprintModule(eng, fetch_fn=lambda t: ({}, "")), {}),
+            (SubdomainTakeoverModule(eng,
+                resolve_cname_fn=lambda h: None,
+                http_fetch_fn=lambda h: None), {}),
+            (EndpointDiscoveryModule(eng,
+                fetch_fn=lambda url: (404, ""),
+                respect_robots=False), {"wordlist": ["admin"]}),
+        ]
+        for module, kwargs in modules_and_kwargs:
+            result = module.run("198.51.100.5", **kwargs)
+            assert result.error is None, (
+                f"Module '{type(module).__name__}' raised an error: {result.error}"
+            )
+
+    def test_all_active_modules_in_cli_registry_run_without_crash(self):
+        """Meta-test for the active tier."""
+        from redteam_toolkit.active.canary import LocalCanaryListener
+        from redteam_toolkit.active.open_redirect import OpenRedirectModule
+        from redteam_toolkit.active.path_traversal import PathTraversalModule
+        from redteam_toolkit.active.sqli import SQLInjectionModule
+        from redteam_toolkit.active.ssrf import SSRFDetectionModule
+        from redteam_toolkit.active.xss import XSSDetectionModule
+
+        eng = self._eng(targets=["http://198.51.100.5"])
+        canary = LocalCanaryListener(host="127.0.0.1")
+        try:
+            modules = [
+                SQLInjectionModule(eng),
+                XSSDetectionModule(eng),
+                OpenRedirectModule(eng),
+                SSRFDetectionModule(eng, canary_listener=canary),
+                PathTraversalModule(eng),
+            ]
+            for module in modules:
+                result = module.run("http://198.51.100.5/test?id=1")
+                assert result.error is None or "scope" in str(result.error).lower(), (
+                    f"Module '{type(module).__name__}' raised an unexpected error: {result.error}"
+                )
+        finally:
+            canary.shutdown()

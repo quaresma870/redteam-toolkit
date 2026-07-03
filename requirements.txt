@@ -9,6 +9,9 @@ reportlab>=4.0.0
 pytest>=8.2.0
 ruff>=0.4.0
 
-# Dashboard tests (fastapi.testclient.TestClient needs httpx)
+# Dashboard tests (starlette.testclient.TestClient requires httpx2,
+# not httpx, on current starlette versions -- same gap found and
+# fixed in the sibling secureaudit repo; confirmed here by actually
+# hitting the RuntimeError on a clean environment before fixing it)
 fastapi>=0.110.0
-httpx>=0.27.0
+httpx2>=0.27.0
