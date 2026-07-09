@@ -33,6 +33,10 @@ tr:last-child td{border:none}
 .MEDIUM{background:#3f2a00;color:var(--medium)}
 .LOW{background:#0c1f3f;color:var(--low)}
 .INFO{background:#1a1d27;color:var(--muted);border:1px solid var(--border)}
+.status-open{background:#1a1d27;color:var(--muted);border:1px solid var(--border)}
+.status-false-positive{background:#0c1f3f;color:var(--low)}
+.status-accepted-risk{background:#3f2a00;color:var(--medium)}
+.status-remediated{background:#0d2b1a;color:var(--ok)}
 .scope-table td:first-child{color:var(--muted);width:160px}
 .evidence{font-family:ui-monospace,monospace;font-size:.78rem;color:var(--muted);
   background:#0c0e14;padding:.4rem .6rem;border-radius:4px;display:block;margin-top:.3rem;
@@ -94,12 +98,17 @@ def render_html(report: EngagementReport) -> str:
         evidence_html = f'<div class="evidence">{_escape(f.evidence)}</div>' if f.evidence else ""
         remediation_html = f"<br><em>Remediation:</em> {_escape(f.remediation)}" if f.remediation else ""
         cvss = f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"
+        status = f.extra.get("status", "open") if f.extra else "open"
+        status_reason = f.extra.get("status_reason") if f.extra else None
+        status_html = f'<span class="badge status-{status}">{status}</span>'
+        if status_reason:
+            status_html += f"<br><span style='color:var(--muted);font-size:.78rem'>{_escape(status_reason)}</span>"
         findings_rows += (
             f'<tr><td><span class="badge {f.severity.value}">{f.severity.value}</span></td>'
             f"<td>{f.target}</td><td>{f.category.value}</td><td>{f.module}</td>"
             f"<td>{_escape(f.title)}<br><span style='color:var(--muted);font-size:.82rem'>"
             f"{_escape(f.description)}</span>{remediation_html}{evidence_html}</td>"
-            f"<td>{cvss}</td></tr>\n"
+            f"<td>{cvss}</td><td>{status_html}</td></tr>\n"
         )
 
     integrity_class = "integrity-ok" if report.audit_log_integrity_ok else "integrity-bad"
@@ -145,8 +154,8 @@ def render_html(report: EngagementReport) -> str:
 <div class="card">
   <h2>Technical Findings</h2>
   <table>
-    <tr><th>Severity</th><th>Target</th><th>Category</th><th>Module</th><th>Finding</th><th>CVSS</th></tr>
-    {findings_rows or "<tr><td colspan='6' style='text-align:center;color:var(--muted)'>No findings</td></tr>"}
+    <tr><th>Severity</th><th>Target</th><th>Category</th><th>Module</th><th>Finding</th><th>CVSS</th><th>Status</th></tr>
+    {findings_rows or "<tr><td colspan='7' style='text-align:center;color:var(--muted)'>No findings</td></tr>"}
   </table>
 </div>
 

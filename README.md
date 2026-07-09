@@ -127,6 +127,14 @@ PYTHONPATH=. python -m redteam_toolkit.cli report --db engagements.db --format b
 PYTHONPATH=. python -m redteam_toolkit.cli diff previous latest --db engagements.db
 PYTHONPATH=. python -m redteam_toolkit.cli diff 3 7 --db engagements.db --json
 
+# 8c. Triage a finding — mark it false-positive/accepted-risk/remediated so it
+#     stops counting toward diff's regression exit code on future re-scans.
+#     Never hides the finding — it still shows up in diff/report, just marked.
+#     Finding IDs come from a report, `diff --json`, or the dashboard.
+PYTHONPATH=. python -m redteam_toolkit.cli triage 42 --status accepted-risk \
+  --reason "Client approved, ticket JIRA-123" --until 2026-12-31 --db engagements.db
+PYTHONPATH=. python -m redteam_toolkit.cli triage 42 --status open --db engagements.db  # revert
+
 # 9. Browse engagement history — read-only, not authenticated by default
 PYTHONPATH=. python -m redteam_toolkit.cli serve --db engagements.db
 ```
@@ -250,7 +258,8 @@ redteam-toolkit/
 │   │   ├── rate_limit.py        # RateLimiter + GlobalRateBudget — hard session-wide ceiling
 │   │   ├── cvss.py              # project-wide CVSS scoring rubric
 │   │   ├── history.py           # SQLite persistence of module results, keyed by engagement_id
-│   │   └── diff.py              # compare findings between two persisted scan points — `diff` command
+│   │   ├── diff.py              # compare findings between two persisted scan points — `diff` command
+│   │   └── status.py            # finding disposition tracking (false-positive/accepted-risk/remediated) — `triage` command
 │   ├── templates/                # engagement-type authorization.yml templates (init --template)
 │   ├── reports/
 │   │   ├── build.py             # assembles a full EngagementReport from authorization + history

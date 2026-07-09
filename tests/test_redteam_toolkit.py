@@ -1400,6 +1400,170 @@ class TestDiffCLI:
             assert "No regression" in result.output
 
 
+class TestTriageCLI:
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def _seed_one_finding(self, db_path, engagement_id="test-2026-q1"):
+        import sqlite3
+
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        register_engagement(db_path, engagement_id, "Example Corp", "Jane Doe, CISO",
+                             ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+        save_module_result(db_path, engagement_id, "198.51.100.5", ModuleResult(
+            module="sqli_detection",
+            findings=[Finding(module="sqli_detection", title="Possible SQL injection",
+                               severity=Severity.CRITICAL, category=FindingCategory.ACTIVE,
+                               target="198.51.100.5")],
+        ))
+        conn = sqlite3.connect(db_path)
+        finding_id = conn.execute("SELECT id FROM findings").fetchone()[0]
+        conn.close()
+        return finding_id
+
+    def test_triage_sets_disposition_and_confirms_in_output(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            finding_id = self._seed_one_finding(db_path)
+
+            result = runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "accepted-risk",
+                "--reason", "Client approved, ticket JIRA-123", "--until", "2099-01-01",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code == 0, result.output
+            assert "accepted-risk" in result.output
+            assert "JIRA-123" in result.output
+
+    def test_triage_persists_and_diff_reflects_it(self):
+        """The real end-to-end path: triage a finding, then confirm a
+        subsequent diff shows it dispositioned and no longer counts as
+        a regression."""
+        from redteam_toolkit.cli import cli
+        from redteam_toolkit.core.history import save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+
+            run1 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(module="a", findings=[]))
+            from redteam_toolkit.core.history import register_engagement
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            run2 = save_module_result(db_path, "test-2026-q1", "x", ModuleResult(
+                module="xss_detection",
+                findings=[Finding(module="xss_detection", title="Reflected XSS", severity=Severity.CRITICAL,
+                                   category=FindingCategory.ACTIVE, target="x")],
+            ))
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            finding_id = conn.execute("SELECT id FROM findings").fetchone()[0]
+            conn.close()
+
+            # Before triage: diff shows a regression.
+            result_before = runner.invoke(cli, [
+                "diff", str(run1), str(run2), "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result_before.exit_code == 1
+            assert "Regression" in result_before.output
+
+            runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "false-positive",
+                "--reason", "sanitized by WAF", "--authorization", str(auth_path), "--db", db_path,
+            ])
+
+            # After triage: same diff no longer regresses, and the
+            # finding is still shown (not hidden), marked accordingly.
+            result_after = runner.invoke(cli, [
+                "diff", str(run1), str(run2), "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result_after.exit_code == 0, result_after.output
+            assert "No regression" in result_after.output
+            assert "Reflected XSS" in result_after.output
+            assert "false-positive" in result_after.output
+
+    def test_triage_unknown_finding_id_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            self._seed_one_finding(db_path)
+
+            result = runner.invoke(cli, [
+                "triage", "99999", "--status", "remediated",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code != 0
+            assert "no finding" in result.output.lower()
+
+    def test_triage_wrong_engagement_refused(self):
+        """A finding belonging to a DIFFERENT engagement_id than the
+        one authorization.yml resolves to must be refused -- prevents
+        accidentally dispositioning a finding from someone else's
+        engagement just because it happens to share the same --db."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)  # resolves to engagement_id "test-2026-q1"
+            db_path = str(Path(d) / "eng.db")
+            finding_id = self._seed_one_finding(db_path, engagement_id="a-totally-different-engagement")
+
+            result = runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "remediated",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code != 0
+            assert "different-engagement" in result.output.lower() or "belongs to engagement" in result.output.lower()
+
+    def test_triage_invalid_status_rejected_by_click_choice(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            finding_id = self._seed_one_finding(db_path)
+
+            result = runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "not-a-real-status",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code == 2  # click's own usage-error exit code
+
+    def test_triage_can_revert_to_open(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+            finding_id = self._seed_one_finding(db_path)
+
+            runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "accepted-risk",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            result = runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "open",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+            assert result.exit_code == 0
+            assert "open" in result.output.lower()
+
+
 class TestServeMissingDashboardDeps:
     """Regression tests for a real, reproduced bug found via systematic
     end-to-end audit (built the real wheel, installed in a clean venv,
@@ -1887,6 +2051,138 @@ class TestReportContentCorrectness:
     def _runner(self):
         from click.testing import CliRunner
         return CliRunner()
+
+
+class TestReportStatusIntegration:
+    """Issue #50 acceptance criterion: a dispositioned finding must be
+    visible (not hidden) and visually distinct in report output, the
+    same requirement already covered for `diff` in TestTriageCLI."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_html_report_shows_disposition_via_real_cli_end_to_end(self):
+        """The real path: recon finds something, triage dispositions it,
+        report renders it — confirms build_report()'s own status lookup
+        (not a hand-constructed EngagementReport) actually wires
+        together correctly."""
+        from redteam_toolkit.cli import cli
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            save_module_result(db_path, "test-2026-q1", "198.51.100.5", ModuleResult(
+                module="sqli_detection",
+                findings=[Finding(module="sqli_detection", title="Possible SQL injection",
+                                   severity=Severity.CRITICAL, category=FindingCategory.ACTIVE,
+                                   target="198.51.100.5")],
+            ))
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            finding_id = conn.execute("SELECT id FROM findings").fetchone()[0]
+            conn.close()
+
+            runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "accepted-risk",
+                "--reason", "Client approved, ticket JIRA-999",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+
+            out_base = str(Path(d) / "report")
+            result = runner.invoke(cli, [
+                "report", "--authorization", str(auth_path), "--db", db_path,
+                "--format", "html", "--output", out_base,
+            ])
+            assert result.exit_code == 0, result.output
+            content = (Path(d) / "report-report.html").read_text()
+            assert "accepted-risk" in content
+            assert "JIRA-999" in content
+            # The finding itself must still be present, not hidden.
+            assert "Possible SQL injection" in content
+
+    def test_html_report_defaults_to_open_status_for_never_triaged_findings(self):
+        """A finding that was never triaged must render with 'open'
+        status, not blank/missing -- confirms the default path, not
+        just the dispositioned path."""
+        from redteam_toolkit.cli import cli
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            save_module_result(db_path, "test-2026-q1", "198.51.100.5", ModuleResult(
+                module="port_scanner",
+                findings=[Finding(module="port_scanner", title="Open port: 22", severity=Severity.LOW,
+                                   category=FindingCategory.RECON, target="198.51.100.5")],
+            ))
+
+            out_base = str(Path(d) / "report")
+            result = runner.invoke(cli, [
+                "report", "--authorization", str(auth_path), "--db", db_path,
+                "--format", "html", "--output", out_base,
+            ])
+            assert result.exit_code == 0, result.output
+            content = (Path(d) / "report-report.html").read_text()
+            assert "status-open" in content
+
+    def test_pdf_report_does_not_crash_with_dispositioned_findings(self):
+        """PDF page content is ASCII85+FlateDecode-compressed (documented
+        limitation from #48's own work), so this doesn't assert on
+        rendered text content the way the HTML test does -- it confirms
+        the PDF path handles a dispositioned finding without raising,
+        and produces a valid, non-trivial PDF file."""
+        from redteam_toolkit.cli import cli
+        from redteam_toolkit.core.history import register_engagement, save_module_result
+        from redteam_toolkit.core.models import Finding, FindingCategory, ModuleResult, Severity
+
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "authorization.yml"
+            _write_auth_yaml(auth_path)
+            db_path = str(Path(d) / "eng.db")
+
+            register_engagement(db_path, "test-2026-q1", "Example Corp", "Jane Doe, CISO",
+                                 ["198.51.100.0/24"], "2026-01-01", "2026-01-07")
+            save_module_result(db_path, "test-2026-q1", "198.51.100.5", ModuleResult(
+                module="sqli_detection",
+                findings=[Finding(module="sqli_detection", title="Possible SQL injection",
+                                   severity=Severity.CRITICAL, category=FindingCategory.ACTIVE,
+                                   target="198.51.100.5")],
+            ))
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            finding_id = conn.execute("SELECT id FROM findings").fetchone()[0]
+            conn.close()
+
+            runner.invoke(cli, [
+                "triage", str(finding_id), "--status", "remediated", "--reason", "Patched in v2.3",
+                "--authorization", str(auth_path), "--db", db_path,
+            ])
+
+            out_base = str(Path(d) / "report")
+            result = runner.invoke(cli, [
+                "report", "--authorization", str(auth_path), "--db", db_path,
+                "--format", "pdf", "--output", out_base,
+            ])
+            assert result.exit_code == 0, result.output
+            pdf_path = Path(d) / "report-report.pdf"
+            assert pdf_path.exists()
+            assert pdf_path.read_bytes()[:5] == b"%PDF-"
+            assert pdf_path.stat().st_size > 500
 
 
 class TestAllModulesRunWithoutCrashing:
