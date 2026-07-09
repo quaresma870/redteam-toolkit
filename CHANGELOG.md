@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.0
+- feat: **remediation tracking** — new `redteam-toolkit triage <finding-id> --status ...` command marks
+  a finding as `false-positive`, `accepted-risk`, or `remediated` (or reverts to `open`), keyed by the
+  same stable identity (module + slugified title + target) `diff` already uses to match findings
+  across re-scans — a disposition set once follows that logical finding across future scans, not one
+  specific row — closes #50. `--until YYYY-MM-DD` gives a disposition an expiry that silently reverts
+  to `open` after the date passes.
+- feat: `diff`'s regression exit code now excludes new findings marked `false-positive`/`accepted-risk`
+  — backward compatible for any code constructing a `DiffResult` directly. Both `diff` and the HTML/PDF
+  reports gained a Status column — a dispositioned finding is never hidden, only visibly marked.
+- feat: `diff.py`'s finding-identity helper made public (`row_key`) — now genuinely shared with the new
+  `core/status.py`, so a disposition's identity scheme can never independently drift from `diff`'s own
+  matching.
+- test: 29 new tests covering the full triage lifecycle, expiry (past/future/none), per-engagement
+  isolation, the regression-exclusion integration point, and real HTML/PDF report generation with a
+  dispositioned finding via the real `report` command.
+
 ### v0.7.7
 - feat: **exhaustive per-module functional audit** — every module in `recon`/`vuln-id`/`active` verified end-to-end via its actual class and `run()` method, using injected dependencies so no real network calls are needed — closes #43. Specific new tests: `fingerprint` with banner-grab injection, `active_dns`/`zone_transfer` with resolver/AXFR injection (confirming the real 1-arg/2-arg call signatures before writing the tests, not assumed), `cve_correlation` with query injection, and `default_credentials` both with and without `opt_in`. Meta-tests loop all 8 recon and 5 active modules. No functional bugs found — the value is permanent coverage.
 

@@ -139,10 +139,12 @@ def write_pdf(report: EngagementReport, path: str | Path) -> None:
     if findings:
         for f in findings:
             sev_color = _SEVERITY_COLORS.get(f.severity.value, colors.grey)
+            status = f.extra.get("status", "open") if f.extra else "open"
+            status_reason = f.extra.get("status_reason") if f.extra else None
             header = Table(
                 [[f.severity.value, f.target, f.category.value, f.module,
-                  f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—"]],
-                colWidths=[2.5 * cm, 4 * cm, 2.5 * cm, 4 * cm, 2 * cm],
+                  f"{f.cvss_score:.1f}" if f.cvss_score is not None else "—", status]],
+                colWidths=[2.2 * cm, 3.3 * cm, 2.2 * cm, 3.3 * cm, 1.5 * cm, 2.5 * cm],
             )
             header.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (0, 0), sev_color),
@@ -158,6 +160,8 @@ def write_pdf(report: EngagementReport, path: str | Path) -> None:
                 elements.append(Paragraph(f"<i>Remediation:</i> {_escape(f.remediation)}", small_style))
             if f.evidence:
                 elements.append(Paragraph(f"<font face='Courier' size=7>{_escape(f.evidence[:300])}</font>", small_style))
+            if status_reason:
+                elements.append(Paragraph(f"<i>Disposition ({status}):</i> {_escape(status_reason)}", small_style))
             elements.append(Spacer(1, 8))
     else:
         elements.append(Paragraph("No findings.", body_style))

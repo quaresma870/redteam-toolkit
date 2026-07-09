@@ -38,11 +38,15 @@ def _slugify(text: str) -> str:
     return slug or "unknown-finding"
 
 
-def _row_key(row: dict) -> str:
+def row_key(row: dict) -> str:
     """Stable key for a finding row. Mirrors secureaudit's
     plugin:slug:file approach — module:slug:target here, since target
     (not file) is this project's equivalent of "where this finding is
-    about"."""
+    about". Public (not module-private) because core/status.py needs
+    the exact same identity scheme for finding-disposition tracking —
+    a disposition set on a finding must follow the same logical
+    identity diff already uses to match findings across re-scans, not
+    a second, separately-maintained scheme that could drift from it."""
     return f"{row['module']}:{_slugify(row['title'])}:{row.get('target') or ''}"
 
 
@@ -143,8 +147,19 @@ class DiffResult:
 
     @property
     def has_new_regression(self) -> bool:
-        """True if any newly-appeared finding is CRITICAL or HIGH severity."""
-        return any(f["severity"] in _REGRESSION_SEVERITIES for f in self.new)
+        """True if any newly-appeared finding is CRITICAL or HIGH severity
+        AND is not dispositioned as false-positive/accepted-risk. Reads
+        `status` via .get() with a default of "open" so this stays
+        correct for any DiffResult built without ever calling
+        annotate_with_status() (every existing test that constructs a
+        DiffResult directly, never setting 'status' on its finding
+        dicts, keeps behaving exactly as before — "open" excludes
+        nothing)."""
+        return any(
+            f["severity"] in _REGRESSION_SEVERITIES
+            and f.get("status", "open") not in ("false-positive", "accepted-risk")
+            for f in self.new
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -165,8 +180,8 @@ def diff_runs(db_path: str, engagement_id: str, run1_id: int, run2_id: int) -> D
     findings1 = get_findings_as_of(db_path, engagement_id, run1_id)
     findings2 = get_findings_as_of(db_path, engagement_id, run2_id)
 
-    keys1 = {_row_key(f): f for f in findings1}
-    keys2 = {_row_key(f): f for f in findings2}
+    keys1 = {row_key(f): f for f in findings1}
+    keys2 = {row_key(f): f for f in findings2}
 
     new_keys = set(keys2) - set(keys1)
     resolved_keys = set(keys1) - set(keys2)

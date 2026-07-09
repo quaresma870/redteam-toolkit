@@ -96,8 +96,9 @@ def _print_diff(result) -> None:
         t.add_column("Module")
         t.add_column("Title", overflow="fold")
         t.add_column("Target", overflow="fold")
+        t.add_column("Status")
         for f in sorted(result.new, key=lambda x: sev_order.index(x["severity"])):
-            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "")
+            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "", f.get("status", "open"))
         console.print(t)
     else:
         console.print("[green]No new findings.[/green]")
@@ -108,8 +109,9 @@ def _print_diff(result) -> None:
         t.add_column("Module")
         t.add_column("Title", overflow="fold")
         t.add_column("Target", overflow="fold")
+        t.add_column("Status")
         for f in sorted(result.resolved, key=lambda x: sev_order.index(x["severity"])):
-            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "")
+            t.add_row(f["severity"], f["module"], f["title"], f.get("target") or "", f.get("status", "open"))
         console.print(t)
 
     console.print(f"\n[dim]{result.unchanged_count} unchanged finding(s).[/dim]")
@@ -788,6 +790,10 @@ def diff(run1, run2, authorization, db, json_out):
 
     result = diff_runs(db, auth.engagement_id, id1, id2)
 
+    from redteam_toolkit.core.status import annotate_with_status
+    annotate_with_status(result.new, db, auth.engagement_id)
+    annotate_with_status(result.resolved, db, auth.engagement_id)
+
     if json_out:
         import json as _json
         # Deliberately plain print(), NOT console.print(): Rich wraps
@@ -806,6 +812,77 @@ def diff(run1, run2, authorization, db, json_out):
 
     if result.has_new_regression:
         sys.exit(1)
+
+
+@cli.command()
+@click.argument("finding_id", type=int)
+@click.option("--status", "new_status", type=click.Choice(["open", "false-positive", "accepted-risk", "remediated"]),
+              required=True, help="Disposition to record for this finding.")
+@click.option("--reason", default=None, help="Why this disposition was chosen — shown alongside the finding in diff/report output.")
+@click.option("--until", default=None, metavar="YYYY-MM-DD",
+              help="Expiry date. After this date, an accepted-risk/false-positive disposition silently reverts to 'open'.")
+@click.option("--db", required=True, help="SQLite database with persisted history.")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml — used to determine the engagement_id.")
+def triage(finding_id, new_status, reason, until, db, authorization):
+    """Record a disposition (false-positive / accepted-risk / remediated)
+    for a specific finding, by its numeric ID (shown in `report`,
+    `diff --json`, or the dashboard).
+
+    The disposition follows the finding's stable identity (module + title
+    + target) — the same identity `diff` already uses to match findings
+    across re-scans — so it persists onto that same logical finding even
+    after a fresh recon/vuln-id/active run gives it a brand new row ID.
+    A dispositioned finding is never hidden: it still appears in `diff`
+    and `report` output, just visibly marked, and a false-positive or
+    accepted-risk disposition no longer counts toward `diff`'s
+    regression exit code.
+
+    Examples:
+      redteam-toolkit triage 42 --status accepted-risk --reason "Client approved, ticket JIRA-123" --until 2026-12-31
+      redteam-toolkit triage 42 --status remediated --reason "Patched in v2.3"
+      redteam-toolkit triage 42 --status open   # revert an earlier disposition
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError, load_authorization
+    from redteam_toolkit.core.diff import row_key
+    from redteam_toolkit.core.status import find_finding_by_id, set_status
+
+    try:
+        auth = load_authorization(authorization)
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    if not Path(db).exists():
+        console.print(f"[red]✘ Database not found: {db}[/red]")
+        sys.exit(1)
+
+    finding = find_finding_by_id(db, finding_id)
+    if finding is None:
+        console.print(f"[red]✘ No finding with id {finding_id} found in {db}.[/red]")
+        sys.exit(1)
+
+    if finding["engagement_id"] != auth.engagement_id:
+        console.print(
+            f"[red]✘ Finding {finding_id} belongs to engagement "
+            f"'{finding['engagement_id']}', not '{auth.engagement_id}'.[/red]"
+        )
+        sys.exit(1)
+
+    try:
+        set_status(db, auth.engagement_id, row_key(finding), new_status, reason=reason, until=until)
+    except ValueError as exc:
+        console.print(f"[red]✘ {exc}[/red]")
+        sys.exit(1)
+
+    console.print(
+        f"[green]✔[/green] Finding {finding_id} ([bold]{finding['title']}[/bold]) "
+        f"marked [bold]{new_status}[/bold]."
+    )
+    if reason:
+        console.print(f"  [dim]Reason: {reason}[/dim]")
+    if until:
+        console.print(f"  [dim]Expires: {until} (reverts to 'open' after this date)[/dim]")
 
 
 @cli.command()

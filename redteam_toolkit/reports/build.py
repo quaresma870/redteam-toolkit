@@ -11,8 +11,10 @@ from pathlib import Path
 from redteam_toolkit.core.audit_log import verify_log_integrity
 from redteam_toolkit.core.authorization import Authorization
 from redteam_toolkit.core.cvss import ensure_all_scored
+from redteam_toolkit.core.diff import row_key
 from redteam_toolkit.core.history import load_module_results
 from redteam_toolkit.core.models import EngagementReport
+from redteam_toolkit.core.status import get_status
 
 
 def build_report(
@@ -23,6 +25,17 @@ def build_report(
     module_results = load_module_results(db_path, authorization.engagement_id)
     for mr in module_results:
         ensure_all_scored(mr.findings)
+        for f in mr.findings:
+            # Same disposition lookup diff/triage use, applied here so a
+            # dispositioned finding is visually distinct in the HTML/PDF
+            # report too, not just in `diff` output — a false-positive
+            # or accepted-risk finding is never hidden from the report,
+            # only marked.
+            key = row_key({"module": f.module, "title": f.title, "target": f.target})
+            disposition = get_status(str(db_path), authorization.engagement_id, key)
+            f.extra["status"] = disposition.status if disposition else "open"
+            if disposition and disposition.reason:
+                f.extra["status_reason"] = disposition.reason
 
     log_path = Path(audit_log_path)
     integrity_ok, _, entry_count = verify_log_integrity(log_path)
