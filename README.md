@@ -30,7 +30,10 @@ Before your first real engagement, read:
 
 ### What this tool deliberately does NOT do
 
-- No `schedule`/cron mode — every run is a single, attended, deliberate action
+- No unattended `vuln-id`/`active` automation — those always require a single,
+  attended, deliberate invocation (`active` additionally requires `--confirm`
+  every single time). `schedule` exists for recurring scans, but is
+  deliberately `recon`-only — see `schedule --help` for why
 - No real exploitation — "active" modules confirm a vulnerability class via
   standard, non-destructive probing (the same techniques tools like Nuclei or
   a ZAP baseline scan use), then stop. No payload delivery, no data
@@ -134,6 +137,12 @@ PYTHONPATH=. python -m redteam_toolkit.cli diff 3 7 --db engagements.db --json
 PYTHONPATH=. python -m redteam_toolkit.cli triage 42 --status accepted-risk \
   --reason "Client approved, ticket JIRA-123" --until 2026-12-31 --db engagements.db
 PYTHONPATH=. python -m redteam_toolkit.cli triage 42 --status open --db engagements.db  # revert
+
+# 8d. Recurring recon scans (e.g. a weekly subdomain-takeover sweep) — deliberately
+#     recon-only, never vuln-id or active. Runs immediately, then on the given
+#     cadence; stops on its own once authorization.yml's window expires.
+PYTHONPATH=. python -m redteam_toolkit.cli schedule app.acme-staging.com \
+  --cron "0 6 * * 1" --modules subdomain_takeover --db engagements.db
 
 # 9. Browse engagement history — read-only, not authenticated by default
 PYTHONPATH=. python -m redteam_toolkit.cli serve --db engagements.db
@@ -249,6 +258,7 @@ value shipped to an external log aggregator) and compare it on a later check.
 redteam-toolkit/
 ├── redteam_toolkit/
 │   ├── cli.py                   # init, validate-scope, status, recon, vuln-id, active
+│   ├── scheduler.py             # `schedule` command — recon-only recurring scans
 │   ├── core/
 │   │   ├── authorization.py     # authorization.yml schema + CIDR/wildcard scope matching + SessionAuth
 │   │   ├── audit_log.py         # hash-chained, append-only audit log

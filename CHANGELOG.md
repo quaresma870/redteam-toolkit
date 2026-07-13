@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.1
+- feat: **`schedule` command for recurring engagements** — new `redteam-toolkit schedule <targets...> --cron "..." --db ...` runs `recon` on a recurring cron schedule, deliberately recon-only (never `vuln-id` or `active`, which require an attended, deliberate invocation) — closes #51. Ported the cron-parsing pattern already proven in the sibling secureaudit repo, adapted with an explicit safety boundary: the authorization window is re-checked before every scheduled tick, and the scheduler stops entirely (not just skips a tick) once the window expires.
+
 ### v0.8.0
 - feat: **remediation tracking** — new `redteam-toolkit triage <finding-id> --status ...` command marks
   a finding as `false-positive`, `accepted-risk`, or `remediated` (or reverts to `open`), keyed by the
