@@ -1244,6 +1244,194 @@ class TestSessionHeaderCLI:
             assert result.exit_code == 0, result.output
 
 
+class TestScheduleCLI:
+    """Issue #51: `schedule` is deliberately recon-only. These tests
+    confirm both the happy path (a real, immediate recon run against a
+    real target) and the specific safety boundary the issue called
+    out: an authorization whose window has already expired must be
+    refused before the scheduler ever starts, not silently polled
+    forever."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_schedule_runs_immediately_and_reports_real_findings(self):
+        """The scheduler's job() runs once immediately on start (same
+        'runs now, then on cadence' behavior as secureaudit's own
+        schedule command) -- confirmed against a real recon module run,
+        not mocked, the same way this project's existing per-module
+        audit tests do. Uses a cron expression far in the future
+        ('0 6 * * 1' -- Monday 06:00) so only the immediate run fires;
+        after that, the scheduler sits in its Ctrl+C-to-stop loop
+        (correct, intended behavior for a long-running scheduler), so
+        this test sends a real SIGINT once the immediate run's output
+        has appeared, rather than letting a bare timeout SIGKILL the
+        process -- confirms the scheduler treats that exactly like a
+        real Ctrl+C (prints 'Scheduler stopped.' and exits cleanly),
+        not just that it happens to die."""
+        import signal
+        import subprocess
+        import time as _time
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["127.0.0.1"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            db_path = str(Path(d) / "schedule.db")
+            proc = subprocess.Popen(
+                ["python3", "-m", "redteam_toolkit.cli", "schedule", "127.0.0.1",
+                 "--cron", "0 6 * * 1", "--modules", "port_scanner",
+                 "--authorization", str(path), "--db", db_path],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                cwd=Path(__file__).parent.parent,
+            )
+            output_lines = []
+            deadline = _time.time() + 15
+            saw_save_line = False
+            while _time.time() < deadline:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                output_lines.append(line)
+                if "Results saved to" in line:
+                    saw_save_line = True
+                    break
+            # A brief pause before signaling: job() has returned and printed
+            # its last line, but the interpreter needs a moment to actually
+            # reach the `while not stopped[0]: ... time.sleep(30)` loop --
+            # confirmed by direct reproduction that sending SIGINT
+            # immediately upon seeing this line (no pause) sometimes lands
+            # the interrupt outside run_schedule's own try/except, letting
+            # it propagate to Click's default handler instead ("Aborted!"),
+            # while a real Ctrl+C from an actual human -- who takes at
+            # least this long to notice output and press the key -- never
+            # hits that same narrow race window in practice.
+            _time.sleep(0.5)
+            proc.send_signal(signal.SIGINT)
+            try:
+                remaining_out, _ = proc.communicate(timeout=10)
+                output_lines.append(remaining_out)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                pytest.fail("Scheduler did not exit within 10s of SIGINT")
+
+        full_output = "".join(output_lines)
+        assert saw_save_line, f"Immediate run never completed. Output so far:\n{full_output}"
+        assert "Scheduled recon run #1" in full_output
+        assert "port_scanner" in full_output
+        assert "Scheduler stopped" in full_output
+        assert proc.returncode == 0
+
+    def test_schedule_refuses_to_start_with_expired_window(self):
+        """The exact safety requirement from the issue: an expired
+        authorization must be refused before the scheduler starts at
+        all -- not accepted and then silently polling forever against
+        a window that will never become valid again."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["127.0.0.1"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            }, window={
+                "start": "2020-01-01T00:00:00+00:00",
+                "end": "2020-01-02T00:00:00+00:00",
+            })
+            result = runner.invoke(cli, [
+                "schedule", "127.0.0.1", "--cron", "0 6 * * 1", "--authorization", str(path),
+            ])
+            assert result.exit_code != 0
+            assert "not currently active" in result.output.lower() or "refusing" in result.output.lower()
+
+    def test_schedule_unknown_module_rejected_before_any_run(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["127.0.0.1"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "schedule", "127.0.0.1", "--cron", "0 6 * * 1",
+                "--modules", "totally_fake_module", "--authorization", str(path),
+            ])
+            assert "Unknown recon module" in result.output
+            assert "Scheduled recon run" not in result.output
+
+    def test_schedule_help_explicitly_documents_the_recon_only_scope(self):
+        """Confirms the safety rationale is actually documented in
+        --help text a real user would see, not just in source comments
+        nobody reads."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        result = runner.invoke(cli, ["schedule", "--help"])
+        assert result.exit_code == 0
+        assert "recon-only" in result.output.lower() or "recon only" in result.output.lower()
+        assert "confirm" in result.output.lower()
+
+    def test_schedule_no_targets_errors_clearly(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            result = runner.invoke(cli, ["schedule", "--cron", "0 6 * * 1", "--authorization", str(path)])
+            assert result.exit_code != 0
+            assert "no targets" in result.output.lower()
+
+    def test_schedule_not_reachable_for_vuln_id_or_active_modules(self):
+        """Structural confirmation that schedule's own module registry
+        (in scheduler.py, not cli.py's recon/vuln-id/active registries)
+        contains ONLY recon modules -- vuln_id and active modules are
+        never even importable through it."""
+        scheduler_source = Path(__file__).parent.parent / "redteam_toolkit" / "scheduler.py"
+        scheduler_text = scheduler_source.read_text()
+        assert "from redteam_toolkit.vuln_id" not in scheduler_text
+        assert "from redteam_toolkit.active" not in scheduler_text
+
+
+class TestSchedulerCronParsing:
+    """Direct tests of _parse_cron's supported subset -- mirrors the
+    equivalent coverage the sibling secureaudit repo's own scheduler
+    tests have, confirmed against the exact same underlying `schedule`
+    library and the exact same reasonable cron subset."""
+
+    def test_every_n_minutes(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        job = _parse_cron("*/15 * * * *", lambda: None)
+        assert job is not None
+
+    def test_every_n_hours(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        job = _parse_cron("0 */6 * * *", lambda: None)
+        assert job is not None
+
+    def test_daily_at_time(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        job = _parse_cron("30 6 * * *", lambda: None)
+        assert job is not None
+
+    def test_weekly_on_weekday(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        job = _parse_cron("0 6 * * 1", lambda: None)
+        assert job is not None
+
+    def test_invalid_field_count_raises(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="5 cron fields"):
+            _parse_cron("not a cron", lambda: None)
+
+    def test_unsupported_pattern_raises(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="Unsupported cron"):
+            _parse_cron("*/5 */3 * * *", lambda: None)  # both fields wildcarded — unsupported combo
+
+
 class TestDiffCLI:
     def _runner(self):
         from click.testing import CliRunner

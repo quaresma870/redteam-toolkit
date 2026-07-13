@@ -30,6 +30,7 @@ dependencies = [
     "dnspython>=2.6.0",
     "cryptography>=42.0.0",
     "reportlab>=4.0.0",
+    "schedule>=1.2.0",
 ]
 
 [project.urls]

@@ -2,8 +2,11 @@
 redteam-toolkit CLI — entry point.
 
 Every command other than `init` requires a validated authorization.yml.
-There is deliberately no `schedule` command anywhere in this tool — every
-run is a single, attended, deliberate action.
+`schedule` is the only command that runs unattended on a recurring
+cadence, and it is deliberately recon-only — vuln-id and active always
+require a single, attended, deliberate invocation (active additionally
+requires --confirm every single time). See schedule()'s own docstring
+for why that boundary exists and isn't crossed.
 """
 
 from __future__ import annotations
@@ -697,6 +700,79 @@ def active(targets, targets_file, authorization, audit_log, modules, confirm, ca
             console.print(f"\n[dim]Results saved to {db} — run 'redteam-toolkit report' to generate a full report.[/dim]")
     finally:
         canary.shutdown()
+
+
+@cli.command()
+@click.argument("targets", nargs=-1, required=False)
+@click.option("--targets-file", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="File with one target per line (# comments and blank lines ignored). "
+                   "Combined with any TARGETS given directly.")
+@click.option("--cron", required=True,
+              help="5-field cron expression (minute hour day month weekday). Supports "
+                   "'*/N * * * *' (every N minutes), '0 */N * * *' (every N hours), "
+                   "'M H * * *' (daily at H:M), and 'M H * * D' (weekly on weekday D, 0=Monday).")
+@click.option("--modules", "-m", default=None,
+              help="Comma-separated recon modules (default: all recon modules). "
+                   "vuln-id and active tiers are NOT available via schedule.")
+@click.option("--authorization", "-a", default="authorization.yml", show_default=True,
+              help="Path to authorization.yml")
+@click.option("--audit-log", default=None,
+              help="Path to the audit log (default: <engagement_id>.audit.jsonl)")
+@click.option("--session-header", multiple=True,
+              help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
+                   "this scheduler makes. Repeatable.")
+@click.option("--db", default=None,
+              help="SQLite database to persist each scheduled run's results.")
+def schedule(targets, targets_file, cron, modules, authorization, audit_log, session_header, db):
+    """Run `recon` on a recurring cron schedule — deliberately recon-only.
+
+    vuln-id and active are NOT available here, on purpose: this project's
+    active tier requires an explicit --confirm on every single invocation
+    precisely because probing a live target with real payloads (SQL
+    injection attempts, XSS payloads, SSRF canary triggers) isn't
+    something that should ever run unattended on a timer. An
+    authorization that's technically still within its time window doesn't
+    mean anyone is still watching what a stale cron job might do to a
+    live system months later. recon's own modules don't carry that risk
+    the same way — they're either fully passive or the same bounded
+    techniques already considered safe enough to run without --confirm
+    even in the ordinary, non-scheduled case.
+
+    The authorization window is re-checked before every single scheduled
+    run, not just once at startup — if it's expired, the scheduler stops
+    entirely rather than silently polling forever against an
+    authorization that will never become valid again.
+
+    Examples:
+      redteam-toolkit schedule app.acme-staging.com --cron "0 6 * * 1" --db engagements.db
+      redteam-toolkit schedule --targets-file targets.txt --cron "*/30 * * * *" \\
+        --modules subdomain_takeover --db engagements.db
+    """
+    from redteam_toolkit.core.authorization import AuthorizationError
+    from redteam_toolkit.core.engagement import Engagement
+    from redteam_toolkit.scheduler import run_schedule
+
+    try:
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
+    except AuthorizationError as exc:
+        console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
+        sys.exit(1)
+
+    resolved_targets = _resolve_targets(targets, targets_file)
+    if not resolved_targets:
+        console.print("[red]✘ No targets given — pass one or more TARGETS or --targets-file.[/red]")
+        sys.exit(1)
+
+    if not eng.authorization.is_within_window():
+        console.print("[red]✘ Authorization window is not currently active — refusing to start.[/red]")
+        sys.exit(1)
+
+    selected_modules = [m.strip() for m in modules.split(",")] if modules else None
+
+    if db:
+        _register_engagement(db, eng)
+
+    run_schedule(eng, resolved_targets, selected_modules, cron, db)
 
 
 @cli.command()
