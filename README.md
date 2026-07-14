@@ -7,6 +7,11 @@
 Authorized penetration testing toolkit — mandatory scope enforcement,
 tamper-evident audit logging, non-destructive vulnerability detection.
 
+![Dashboard showing a demo engagement's findings](docs/images/dashboard-screenshot.png)
+
+*The dashboard above, generated from real (demo) engagement data — see
+[`redteam-toolkit demo`](#quickstart) to produce this yourself in one command.*
+
 ---
 
 ## ⚠️ Authorization required — read this first
