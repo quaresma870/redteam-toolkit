@@ -6,6 +6,7 @@ gate, data models, and CLI.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2530,3 +2531,103 @@ class TestAllModulesRunWithoutCrashing:
                 )
         finally:
             canary.shutdown()
+
+
+class TestDemoCommand:
+    """Issue #53: one-command demo mode. Verifies the acceptance
+    criteria via the real CLI command (not just the underlying
+    target_server module) — starts a real local vulnerable target,
+    runs a real scan against it, and produces real, verifiable
+    findings and a demo authorization file that's clearly marked as
+    such."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_demo_produces_clearly_marked_authorization_file(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            workdir = Path(d) / "demo-out"
+            result = runner.invoke(cli, ["demo", "--no-serve", "--workdir", str(workdir)])
+            assert result.exit_code == 0, result.output
+
+            auth_path = workdir / "demo-authorization.yml"
+            assert auth_path.exists()
+            content = auth_path.read_text()
+            # The acceptance criteria's specific requirement: cannot be
+            # mistaken for a real engagement's authorization file.
+            assert "DEMO" in content
+            assert "do not use for real engagements" in content
+            assert "127.0.0.1" in content
+
+    def test_demo_produces_real_sqli_and_xss_findings(self):
+        """The demo target's known-vulnerable routes must produce real
+        findings from the real detection modules — not staged/fake
+        output."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            workdir = Path(d) / "demo-out"
+            result = runner.invoke(cli, ["demo", "--no-serve", "--workdir", str(workdir)])
+            assert result.exit_code == 0, result.output
+            assert "sqli_detection: 1 finding" in result.output
+            assert "xss_detection: 1 finding" in result.output
+
+            db_path = workdir / "demo.db"
+            assert db_path.exists()
+            conn = sqlite3.connect(str(db_path))
+            modules_run = {row[0] for row in conn.execute("SELECT DISTINCT module FROM module_runs")}
+            assert "sqli_detection" in modules_run
+            assert "xss_detection" in modules_run
+            conn.close()
+
+    def test_demo_no_serve_does_not_block(self):
+        """--no-serve must return control to the caller — confirms the
+        dashboard is genuinely skipped, not just slow to start (this
+        test would hang/timeout if the dashboard were started anyway)."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            workdir = Path(d) / "demo-out"
+            result = runner.invoke(cli, ["demo", "--no-serve", "--workdir", str(workdir)])
+            assert result.exit_code == 0
+            assert "Dashboard skipped" in result.output
+
+    def test_demo_db_is_immediately_servable(self):
+        """The demo's own --db output must work directly with the real
+        `serve` command afterward — confirms the two commands share a
+        compatible schema/expectations, not just that demo's own
+        internal bookkeeping is self-consistent."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            workdir = Path(d) / "demo-out"
+            runner.invoke(cli, ["demo", "--no-serve", "--workdir", str(workdir)])
+            db_path = workdir / "demo.db"
+
+            from starlette.testclient import TestClient
+
+            from redteam_toolkit.dashboard.app import create_app
+
+            app = create_app(str(db_path))
+            client = TestClient(app)
+            resp = client.get("/api/engagements")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert len(data) == 1
+            assert data[0]["engagement_id"] == "demo"
+            assert "DEMO" in data[0]["client"]
+
+    def test_demo_workdir_defaults_to_cwd_subdirectory(self):
+        """Without --workdir, files land in a predictable, visible
+        location (./redteam-toolkit-demo) rather than a temp directory
+        that vanishes — matches the acceptance criteria's expectation
+        that someone can inspect what was generated."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(cli, ["demo", "--no-serve"])
+            assert result.exit_code == 0, result.output
+            assert Path("redteam-toolkit-demo", "demo-authorization.yml").exists()
