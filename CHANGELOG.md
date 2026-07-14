@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.3
+- docs: **dashboard screenshot in README** — a real screenshot (not a mockup) of the engagement detail dashboard, generated via `redteam-toolkit demo` + `serve` + a real WebKit render (`wkhtmltoimage`), optimized to 37KB via palette-mode PNG compression — closes #52. Embedded near the top of the README, before the authorization warning.
+
 ### v0.8.2
 - feat: **one-command demo mode** — `redteam-toolkit demo` starts a local deliberately vulnerable target, runs a real recon + active scan against it, and opens the dashboard with real findings — no `authorization.yml` to write, no target to stand up — closes #53. Verified against a real installed wheel in a fresh venv (the demo target server lives in `redteam_toolkit/demo/`, a real shipped package module, not the CI-only test fixture). README's Quickstart now leads with this command.
 
