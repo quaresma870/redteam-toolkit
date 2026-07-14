@@ -76,6 +76,24 @@ pip install -r requirements.txt
 
 ## Quickstart
 
+### See it work in 10 seconds — no setup
+
+```bash
+pip install -r requirements.txt
+PYTHONPATH=. python -m redteam_toolkit.cli demo
+```
+
+Starts a local, deliberately vulnerable target, runs a real recon + active
+scan against it, and opens the dashboard with the real findings — no
+`authorization.yml` to write by hand, no real target to find or stand up.
+Everything it generates (`redteam-toolkit-demo/demo-authorization.yml`) is
+clearly marked `DEMO — do not use for real engagements` and scoped only to
+`127.0.0.1`, so it can never be mistaken for a real engagement's
+authorization file. Use `--no-serve` to skip the dashboard and just see the
+scan output.
+
+### A real engagement
+
 ```bash
 pip install -r requirements.txt
 
@@ -277,6 +295,8 @@ redteam-toolkit/
 │   │   └── pdf.py                # PDF export via reportlab — no headless-browser dependency
 │   ├── dashboard/
 │   │   └── app.py                # read-only FastAPI dashboard — not authenticated by default
+│   ├── demo/
+│   │   └── target_server.py      # deliberately vulnerable local server for `demo` command — see #53
 │   ├── recon/
 │   │   ├── base.py              # BaseReconModule — shared run() scope/rate-limit gate
 │   │   ├── port_scanner.py

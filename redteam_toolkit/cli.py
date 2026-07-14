@@ -999,6 +999,131 @@ def serve(db, host, port):
     uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
+@cli.command()
+@click.option("--no-serve", is_flag=True,
+              help="Skip starting the dashboard after scanning. Useful for CI/scripted use.")
+@click.option("--port", default=8090, show_default=True, help="Port for the dashboard, if started.")
+@click.option("--workdir", default=None,
+              help="Directory to write demo files into (default: ./redteam-toolkit-demo, "
+                   "created if it doesn't exist).")
+def demo(no_serve, port, workdir):
+    """One-command demo: starts a local deliberately-vulnerable target,
+    runs a real recon + active scan against it, and opens the dashboard
+    with the real findings — no authorization.yml to write, no real
+    target to find or stand up.
+
+    Everything this generates is clearly marked as a demo (the
+    authorization file's client field, the engagement ID) and scoped
+    only to 127.0.0.1 — it is not, and cannot be mistaken for, a real
+    engagement's authorization file.
+    """
+    import datetime as _datetime
+
+    import yaml
+
+    from redteam_toolkit.active.sqli import SQLInjectionModule
+    from redteam_toolkit.active.xss import XSSDetectionModule
+    from redteam_toolkit.core.authorization import load_authorization
+    from redteam_toolkit.core.engagement import Engagement
+    from redteam_toolkit.demo.target_server import start_demo_target
+    from redteam_toolkit.recon.port_scanner import PortScannerModule
+    from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
+
+    demo_dir = Path(workdir) if workdir else Path.cwd() / "redteam-toolkit-demo"
+    demo_dir.mkdir(parents=True, exist_ok=True)
+    auth_path = demo_dir / "demo-authorization.yml"
+    log_path = demo_dir / "demo.audit.jsonl"
+    db_path = demo_dir / "demo.db"
+
+    console.print("[bold cyan]🎯 redteam-toolkit demo[/bold cyan]\n")
+    console.print("Starting a local, deliberately vulnerable target on 127.0.0.1...")
+    server, target_port = start_demo_target()
+    target = f"http://127.0.0.1:{target_port}"
+    console.print(f"[green]✔[/green] Demo target running at {target}\n")
+
+    now = _datetime.datetime.now(_datetime.UTC)
+    auth_data = {
+        # A human-typed --confirm phrase makes no sense for a fully
+        # automated demo (there's no human deciding to run active-tier
+        # checks in the moment) — the engagement_id itself carries the
+        # "this is a demo" signal below, and confirm_active_tier is
+        # still called for real (not bypassed) with this exact ID.
+        "engagement_id": "demo",
+        "authorized_by": "redteam-toolkit demo",
+        "authorized_contact_email": "demo@localhost",
+        # This field is the primary "you cannot mistake this for a real
+        # engagement" signal an operator reading the file would see —
+        # deliberately loud, not just a plain client name.
+        "client": "DEMO — do not use for real engagements",
+        "scope": {
+            "targets": ["127.0.0.1"],
+            "excluded_targets": [],
+            "allowed_categories": ["recon", "vuln-id", "active"],
+        },
+        "window": {
+            "start": (now - _datetime.timedelta(hours=1)).isoformat(),
+            "end": (now + _datetime.timedelta(days=3650)).isoformat(),
+        },
+        "confirmation_phrase": "I confirm authorization for demo",
+    }
+    auth_path.write_text(yaml.safe_dump(auth_data, sort_keys=False))
+    console.print(f"[green]✔[/green] Demo authorization written: [dim]{auth_path}[/dim]\n")
+
+    try:
+        auth = load_authorization(auth_path)
+        eng = Engagement(auth, log_path)
+        _register_engagement(str(db_path), eng)
+
+        console.print("[bold]Running recon...[/bold]")
+        for mod_name, module in [
+            ("port_scanner", PortScannerModule(eng)),
+            ("http_posture", HTTPPostureModule(eng)),
+        ]:
+            result = module.run("127.0.0.1" if mod_name == "port_scanner" else target)
+            console.print(f"  [green]✔[/green] {mod_name}: {len(result.findings)} finding(s)")
+            _save_module_result(str(db_path), eng, target, result)
+
+        console.print("\n[bold]Confirming active-tier and running active detection...[/bold]")
+        eng.confirm_active_tier("demo")
+        for mod_name, module in [
+            ("sqli_detection", SQLInjectionModule(eng)),
+            ("xss_detection", XSSDetectionModule(eng)),
+        ]:
+            probe_target = f"{target}/vulnerable/sqli?id=1" if mod_name == "sqli_detection" \
+                else f"{target}/vulnerable/reflect?q=demo"
+            result = module.run(probe_target)
+            console.print(f"  [green]✔[/green] {mod_name}: {len(result.findings)} finding(s)")
+            _save_module_result(str(db_path), eng, target, result)
+
+        console.print(
+            "\n[bold green]Demo scan complete.[/bold green] "
+            "Real findings from a real (local, harmless) vulnerable target are now in the dashboard.\n"
+        )
+
+        if no_serve:
+            console.print("[dim]Dashboard skipped (--no-serve). Run manually with:[/dim]")
+            console.print(f"  redteam-toolkit serve --db {db_path}\n")
+            return
+
+        try:
+            import fastapi  # noqa: F401
+            import uvicorn  # noqa: F401
+        except ImportError:
+            console.print("[red]Dashboard dependencies missing.[/red]")
+            console.print("Install with: pip install 'redteam-toolkit\\[dashboard]'")
+            console.print(f"[dim]Scan results are still saved at {db_path}[/dim]")
+            return
+
+        from redteam_toolkit.dashboard.app import create_app
+
+        console.print(f"[bold cyan]Dashboard[/bold cyan] → http://127.0.0.1:{port}")
+        console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
+        app = create_app(str(db_path))
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    finally:
+        server.shutdown()
+
+
 def main():
     cli()
 
