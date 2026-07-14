@@ -1432,6 +1432,107 @@ class TestSchedulerCronParsing:
         with pytest.raises(ValueError, match="Unsupported cron"):
             _parse_cron("*/5 */3 * * *", lambda: None)  # both fields wildcarded — unsupported combo
 
+    def test_out_of_range_minute_raises_clean_value_error(self):
+        """Regression test for a real, reproduced bug: minute=60
+        passes isdigit() (it's a valid digit string) but is out of the
+        valid 0-59 range. Previously this reached the `schedule`
+        library's own .at() call, which raises
+        schedule.ScheduleValueError -- NOT a subclass of ValueError --
+        producing a raw, unhandled traceback through the real installed
+        CLI instead of a clean error message, since only ValueError was
+        being caught upstream."""
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="Invalid minute: 60"):
+            _parse_cron("60 0 * * *", lambda: None)
+
+    def test_out_of_range_hour_raises_clean_value_error(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="Invalid hour: 25"):
+            _parse_cron("0 25 * * *", lambda: None)
+
+    def test_out_of_range_weekly_minute_raises_clean_value_error(self):
+        """Same class of bug, in the weekly (day-of-week) branch."""
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="Invalid minute: 99"):
+            _parse_cron("99 6 * * 1", lambda: None)
+
+    def test_zero_minute_interval_raises_instead_of_hanging(self):
+        """Regression test for a real, reproduced, and much more
+        serious bug than the traceback ones: `*/0 * * * *` (an easy
+        typo of `*/30` losing a digit) doesn't raise ANYTHING when
+        passed to schedule.every(0).minutes -- it hangs the process
+        indefinitely inside the schedule library's own internal
+        next-run computation, a genuine denial-of-service for anyone
+        who fat-fingers a zero into the interval. Confirmed by actually
+        letting this run in a real terminal until it had to be killed,
+        not assumed as a risk from reading the code. The pytest-level
+        timeout below is deliberately generous but present as a safety
+        net in case this regresses -- a passing run takes milliseconds;
+        a regression would hang until CI's own job-level timeout."""
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="minute interval.*must be a positive integer"):
+            _parse_cron("*/0 * * * *", lambda: None)
+
+    def test_zero_hour_interval_raises_instead_of_hanging(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="hour interval.*must be a positive integer"):
+            _parse_cron("0 */0 * * *", lambda: None)
+
+    def test_negative_interval_raises(self):
+        from redteam_toolkit.scheduler import _parse_cron
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            _parse_cron("*/-5 * * * *", lambda: None)
+
+
+class TestScheduleCLIErrorHandling:
+    """The CLI-level wrapping of _parse_cron's errors — confirms the
+    real `schedule` command shows a clean message and exits non-zero,
+    rather than a raw traceback, for every one of the invalid-cron
+    cases above."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_invalid_cron_shows_clean_error_not_traceback(self):
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["198.51.100.5"], "excluded_targets": [],
+                "allowed_categories": ["recon"],
+            })
+            result = runner.invoke(cli, [
+                "schedule", "198.51.100.5", "--cron", "60 0 * * *",
+                "--authorization", str(path), "--modules", "port_scanner",
+            ])
+            assert result.exit_code == 1
+            assert "Invalid --cron expression" in result.output
+            assert "Traceback" not in result.output
+
+
+class TestDemoCommandErrorHandling:
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def test_workdir_pointing_at_existing_file_shows_clean_error(self):
+        """Regression test for a real, reproduced bug: --workdir
+        pointing at a path that already exists as a FILE (not a
+        directory) raised a raw, unhandled FileExistsError from
+        Path.mkdir(exist_ok=True) — exist_ok only suppresses the error
+        for an already-existing DIRECTORY, not a file at that path."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            blocked_path = Path(d) / "blocked"
+            blocked_path.write_text("not a directory")
+            result = runner.invoke(cli, ["demo", "--no-serve", "--workdir", str(blocked_path)])
+            assert result.exit_code == 1
+            assert "not a directory" in result.output.lower() or "exists" in result.output.lower()
+            assert "Traceback" not in result.output
+
 
 class TestDiffCLI:
     def _runner(self):

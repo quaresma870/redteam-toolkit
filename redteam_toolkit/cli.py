@@ -772,7 +772,24 @@ def schedule(targets, targets_file, cron, modules, authorization, audit_log, ses
     if db:
         _register_engagement(db, eng)
 
-    run_schedule(eng, resolved_targets, selected_modules, cron, db)
+    try:
+        run_schedule(eng, resolved_targets, selected_modules, cron, db)
+    except ValueError as exc:
+        # _parse_cron raises ValueError for a malformed --cron expression
+        # (wrong field count, or a shape outside the supported subset) —
+        # confirmed by actually passing a garbage --cron value through
+        # the real installed CLI and hitting a raw, unhandled traceback
+        # before this was added, not assumed as a risk from reading the
+        # code.
+        console.print(f"[red]✘ Invalid --cron expression:[/red] {exc}")
+        console.print(
+            "[dim]Supported: '*/N * * * *' (every N minutes), '0 */N * * *' (every N hours), "
+            "'MM HH * * *' (daily at HH:MM), 'MM HH * * D' (weekly, D=0 Mon..6 Sun).[/dim]"
+        )
+        sys.exit(1)
+    except RuntimeError as exc:
+        console.print(f"[red]✘ {exc}[/red]")
+        sys.exit(1)
 
 
 @cli.command()
@@ -1030,7 +1047,14 @@ def demo(no_serve, port, workdir):
     from redteam_toolkit.vuln_id.http_posture import HTTPPostureModule
 
     demo_dir = Path(workdir) if workdir else Path.cwd() / "redteam-toolkit-demo"
-    demo_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        demo_dir.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        console.print(f"[red]✘ --workdir path exists and is not a directory:[/red] {demo_dir}")
+        sys.exit(1)
+    except OSError as exc:
+        console.print(f"[red]✘ Could not create --workdir:[/red] {demo_dir} ({exc})")
+        sys.exit(1)
     auth_path = demo_dir / "demo-authorization.yml"
     log_path = demo_dir / "demo.audit.jsonl"
     db_path = demo_dir / "demo.db"
