@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "redteam-toolkit"
-version = "0.8.3"
+version = "0.8.4"
 description = "Authorized penetration testing toolkit — mandatory scope enforcement, tamper-evident audit logging"
 readme = "README.md"
 license = { text = "MIT" }

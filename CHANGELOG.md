@@ -3,6 +3,12 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.4
+- fix: **`schedule --cron "*/0 * * * *"` hung the process indefinitely** — a real, reproduced denial-of-service (an easy typo losing a digit from `*/30`), confirmed by letting it run until it needed to be killed. Fixed by validating the interval is a positive integer before it ever reaches the `schedule` library.
+- fix: **out-of-range `--cron` hour/minute values (e.g. minute=60, hour=25) produced a raw, unhandled traceback** — `schedule.ScheduleValueError` isn't a subclass of `ValueError`, so it slipped past the CLI's error handling. Fixed with explicit range validation plus a `schedule.ScheduleError` catch-all.
+- fix: **`demo --workdir <path-to-an-existing-file>` produced a raw, unhandled `FileExistsError`** — `Path.mkdir(exist_ok=True)` only suppresses the error for an existing directory, not a file at that path.
+- Found via a targeted audit of the two most recently added features (`demo`, `schedule`) — same method used throughout this project's history: build the real wheel, install in a clean venv, run every realistic command and error path by hand.
+
 ### v0.8.3
 - docs: **dashboard screenshot in README** — a real screenshot (not a mockup) of the engagement detail dashboard, generated via `redteam-toolkit demo` + `serve` + a real WebKit render (`wkhtmltoimage`), optimized to 37KB via palette-mode PNG compression — closes #52. Embedded near the top of the README, before the authorization warning.
 
