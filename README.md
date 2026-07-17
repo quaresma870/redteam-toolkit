@@ -239,6 +239,31 @@ security-sensitive in this toolkit:**
   the token has probably expired — re-authenticate and supply a fresh one,
   rather than assuming the target itself changed.
 
+### Scanning targets with a self-signed certificate
+
+By default, every HTTP-based module (`http_posture`, `web_fingerprint`,
+`endpoint_discovery`, and the active-tier injection detectors) verifies TLS
+certificates the same way a browser would — a target with a self-signed or
+otherwise unverifiable certificate (extremely common for internal or
+staging infrastructure) fails with a generic "request failed" finding
+rather than actually scanning it.
+
+For an authorized engagement against exactly this kind of target, pass
+`--insecure` to `recon`, `vuln-id`, or `active`:
+
+```bash
+PYTHONPATH=. python -m redteam_toolkit.cli vuln-id https://internal-app.staging \
+  --insecure --modules http_posture
+```
+
+This prints a clear warning every time it's used and is **deliberately
+CLI-only** — there is no `authorization.yml` equivalent, unlike
+`session_auth`. Disabling certificate verification is a real security
+tradeoff that should be a conscious choice made fresh for each invocation
+(the same way `curl -k` works), not something that could be silently
+carried over from an old config file into a future engagement against a
+target that does have a valid certificate.
+
 ### The audit log
 
 Every action — allowed or refused — is recorded in `<engagement_id>.audit.jsonl`,

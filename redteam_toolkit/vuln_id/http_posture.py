@@ -146,7 +146,7 @@ class HTTPPostureModule(BaseReconModule):
         headers.update(self.engagement.auth_headers())
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.engagement.ssl_context()) as resp:
                 return dict(resp.headers)
         except urllib.error.HTTPError as exc:
             return dict(exc.headers) if exc.headers else {}

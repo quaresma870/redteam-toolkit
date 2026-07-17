@@ -335,9 +335,13 @@ def status(authorization, audit_log):
               help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
                    "this run makes — for scanning targets behind a login wall. Repeatable. "
                    "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
+@click.option("--insecure", is_flag=True,
+              help="Disable TLS certificate verification — for scanning targets with a "
+                   "self-signed or otherwise unverifiable certificate (common for internal/"
+                   "staging infrastructure). Prints a warning. Never persisted to authorization.yml.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def recon(targets, targets_file, authorization, audit_log, modules, aggressive, session_header, db):
+def recon(targets, targets_file, authorization, audit_log, modules, aggressive, session_header, insecure, db):
     """Run reconnaissance modules against one or more TARGETS.
 
     Accepts multiple targets directly (recon a.example.com b.example.com)
@@ -379,7 +383,13 @@ def recon(targets, targets_file, authorization, audit_log, modules, aggressive, 
     from redteam_toolkit.recon.web_fingerprint import WebFingerprintModule
 
     try:
-        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header), insecure=insecure)
+        if insecure:
+            console.print(
+                "[yellow]⚠ --insecure: TLS certificate verification disabled for this run. "
+                "Only use this against targets you know have a self-signed or otherwise "
+                "unverifiable certificate.[/yellow]"
+            )
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
@@ -478,9 +488,13 @@ def recon(targets, targets_file, authorization, audit_log, modules, aggressive, 
               help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
                    "this run makes — for scanning targets behind a login wall. Repeatable. "
                    "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
+@click.option("--insecure", is_flag=True,
+              help="Disable TLS certificate verification — for scanning targets with a "
+                   "self-signed or otherwise unverifiable certificate (common for internal/"
+                   "staging infrastructure). Prints a warning. Never persisted to authorization.yml.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def vuln_id(targets, targets_file, authorization, audit_log, modules, check_default_creds, tls_port, session_header, db):
+def vuln_id(targets, targets_file, authorization, audit_log, modules, check_default_creds, tls_port, session_header, insecure, db):
     """Run vulnerability identification modules against one or more TARGETS.
     Read-only — no exploitation, no credential brute-forcing.
 
@@ -497,7 +511,13 @@ def vuln_id(targets, targets_file, authorization, audit_log, modules, check_defa
     from redteam_toolkit.vuln_id.tls_analyzer import TLSAnalyzerModule
 
     try:
-        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header), insecure=insecure)
+        if insecure:
+            console.print(
+                "[yellow]⚠ --insecure: TLS certificate verification disabled for this run. "
+                "Only use this against targets you know have a self-signed or otherwise "
+                "unverifiable certificate.[/yellow]"
+            )
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
@@ -597,9 +617,13 @@ def vuln_id(targets, targets_file, authorization, audit_log, modules, check_defa
               help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
                    "this run makes — for scanning targets behind a login wall. Repeatable. "
                    "Merges with (and overrides on conflict) authorization.yml's session_auth.headers.")
+@click.option("--insecure", is_flag=True,
+              help="Disable TLS certificate verification — for scanning targets with a "
+                   "self-signed or otherwise unverifiable certificate (common for internal/"
+                   "staging infrastructure). Prints a warning. Never persisted to authorization.yml.")
 @click.option("--db", default=None,
               help="SQLite database to persist results for the 'report' command and dashboard.")
-def active(targets, targets_file, authorization, audit_log, modules, confirm, canary_host, session_header, db):
+def active(targets, targets_file, authorization, audit_log, modules, confirm, canary_host, session_header, insecure, db):
     """Run active-tier detection modules against one or more TARGETS.
 
     Non-destructive confirmation only — never exploitation. Requires
@@ -621,7 +645,13 @@ def active(targets, targets_file, authorization, audit_log, modules, confirm, ca
     from redteam_toolkit.core.engagement import Engagement, ScopeViolation
 
     try:
-        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header), insecure=insecure)
+        if insecure:
+            console.print(
+                "[yellow]⚠ --insecure: TLS certificate verification disabled for this run. "
+                "Only use this against targets you know have a self-signed or otherwise "
+                "unverifiable certificate.[/yellow]"
+            )
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)
@@ -721,9 +751,12 @@ def active(targets, targets_file, authorization, audit_log, modules, confirm, ca
 @click.option("--session-header", multiple=True,
               help="'Name: Value' header (e.g. a session cookie) to attach to every HTTP request "
                    "this scheduler makes. Repeatable.")
+@click.option("--insecure", is_flag=True,
+              help="Disable TLS certificate verification — for scanning targets with a "
+                   "self-signed or otherwise unverifiable certificate. Prints a warning.")
 @click.option("--db", default=None,
               help="SQLite database to persist each scheduled run's results.")
-def schedule(targets, targets_file, cron, modules, authorization, audit_log, session_header, db):
+def schedule(targets, targets_file, cron, modules, authorization, audit_log, session_header, insecure, db):
     """Run `recon` on a recurring cron schedule — deliberately recon-only.
 
     vuln-id and active are NOT available here, on purpose: this project's
@@ -753,7 +786,13 @@ def schedule(targets, targets_file, cron, modules, authorization, audit_log, ses
     from redteam_toolkit.scheduler import run_schedule
 
     try:
-        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header))
+        eng = Engagement.load(authorization, audit_log, extra_session_headers=_parse_session_headers(session_header), insecure=insecure)
+        if insecure:
+            console.print(
+                "[yellow]⚠ --insecure: TLS certificate verification disabled for this run. "
+                "Only use this against targets you know have a self-signed or otherwise "
+                "unverifiable certificate.[/yellow]"
+            )
     except AuthorizationError as exc:
         console.print(f"[red]✘ Invalid authorization file:[/red] {exc}")
         sys.exit(1)

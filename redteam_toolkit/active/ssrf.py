@@ -103,7 +103,7 @@ class SSRFDetectionModule(BaseReconModule):
         full_url = f"{url}{sep}{param}={urllib.parse.quote(payload, safe='')}"
         req = urllib.request.Request(full_url, headers={"User-Agent": "redteam-toolkit/0.1"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.engagement.ssl_context()) as resp:
                 resp.read()
         except Exception:
             pass

@@ -35,6 +35,7 @@ class Engagement:
         authorization: Authorization,
         audit_log_path: str | Path,
         extra_session_headers: dict[str, str] | None = None,
+        insecure: bool = False,
     ):
         self.authorization = authorization
         self.audit_log = AuditLog(audit_log_path)
@@ -48,6 +49,15 @@ class Engagement:
         # replacement — supplying one extra header via the CLI doesn't
         # drop whatever's already configured in the file.
         self._extra_session_headers = dict(extra_session_headers or {})
+        # --insecure is deliberately CLI-only, with no authorization.yml
+        # equivalent — unlike session_auth, this disables a real security
+        # protection (TLS certificate verification), and a config-file
+        # default would risk silently carrying over to a future
+        # engagement against a target that DOES have a valid cert, where
+        # it's no longer appropriate. Requiring it fresh on every
+        # invocation (like curl's own -k/--insecure) matches how
+        # security-relevant, non-persistent choices should work.
+        self._insecure = insecure
 
         from redteam_toolkit.core.rate_limit import (
             DEFAULT_MAX_PER_SECOND,
@@ -73,17 +83,39 @@ class Engagement:
         headers.update(self._extra_session_headers)
         return headers
 
+    def ssl_context(self):
+        """Returns None (default: real certificate verification, via
+        Python's own default SSLContext) unless --insecure was passed,
+        in which case returns an SSLContext with verification disabled
+        — for scanning internal/staging targets with a self-signed or
+        otherwise unverifiable certificate, an extremely common
+        situation for exactly the kind of authorized internal
+        engagements this tool exists for. Confirmed this was a real,
+        not hypothetical, gap: every HTTP-based module failed silently
+        (a single unhelpful INFO finding, not a crash, but also no
+        actual scan) against a real self-signed-cert HTTPS target
+        before this existed, reproduced directly against a real TLS
+        server before deciding this was worth building."""
+        if not self._insecure:
+            return None
+        import ssl
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     @classmethod
     def load(
         cls,
         authorization_path: str | Path,
         audit_log_path: str | Path | None = None,
         extra_session_headers: dict[str, str] | None = None,
+        insecure: bool = False,
     ) -> Engagement:
         auth = load_authorization(authorization_path)
         if audit_log_path is None:
             audit_log_path = Path(authorization_path).parent / f"{auth.engagement_id}.audit.jsonl"
-        return cls(auth, audit_log_path, extra_session_headers=extra_session_headers)
+        return cls(auth, audit_log_path, extra_session_headers=extra_session_headers, insecure=insecure)
 
     def confirm_active_tier(self, typed_engagement_id: str) -> None:
         """Required once per session before any active-tier module can run.

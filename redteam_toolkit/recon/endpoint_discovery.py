@@ -142,7 +142,7 @@ class EndpointDiscoveryModule(BaseReconModule):
         headers.update(self.engagement.auth_headers())
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=5, context=self.engagement.ssl_context()) as resp:
                 return resp.status, resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             return exc.code, ""

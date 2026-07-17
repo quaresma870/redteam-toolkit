@@ -1245,6 +1245,147 @@ class TestSessionHeaderCLI:
             assert result.exit_code == 0, result.output
 
 
+class TestInsecureFlag:
+    """Verifies --insecure end-to-end against a real, self-signed-cert
+    HTTPS server -- not mocked. This is the fix for a real, confirmed
+    gap: every HTTP-based module (http_posture, web_fingerprint,
+    endpoint_discovery, sqli/xss/path_traversal/ssrf/open_redirect
+    detection) failed silently against any target with a self-signed
+    certificate -- an extremely common situation for internal/staging
+    infrastructure, exactly the kind of target this tool's own stated
+    purpose (authorized penetration testing) implies scanning.
+    Reproduced directly against a real TLS server with a real
+    self-signed cert before building this, not assumed as a risk from
+    reading the code."""
+
+    def _runner(self):
+        from click.testing import CliRunner
+        return CliRunner()
+
+    def _start_self_signed_https_server(self, tmp_path):
+        """Generates a real self-signed cert with openssl and starts a
+        real TLS-wrapped HTTP server -- confirmed openssl is available
+        in this environment before relying on it, matching how the
+        screenshot work (#52) confirmed wkhtmltoimage was available
+        before reaching for it rather than assuming."""
+        import http.server
+        import ssl
+        import subprocess
+        import threading
+
+        cert_path = tmp_path / "cert.pem"
+        key_path = tmp_path / "key.pem"
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", str(key_path), "-out", str(cert_path),
+            "-days", "1", "-nodes", "-subj", "/CN=internal-test.local",
+        ], check=True, capture_output=True)
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert_path), str(key_path))
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        return server, port
+
+    def test_without_insecure_self_signed_target_produces_no_real_findings(self):
+        """Regression test pinning the ORIGINAL (still-default, still
+        correct) behavior: without --insecure, a self-signed-cert
+        target is refused by TLS verification and produces only the
+        generic 'request failed' INFO finding -- confirms the default
+        stays secure, and gives the next test something concrete to
+        contrast against."""
+        from redteam_toolkit.cli import cli
+        with tempfile.TemporaryDirectory() as d:
+            server, port = self._start_self_signed_https_server(Path(d))
+            try:
+                auth_path = Path(d) / "authorization.yml"
+                _write_auth_yaml(auth_path, scope={
+                    "targets": ["127.0.0.1"], "excluded_targets": [],
+                    "allowed_categories": ["vuln-id"],
+                })
+                runner = self._runner()
+                result = runner.invoke(cli, [
+                    "vuln-id", f"https://127.0.0.1:{port}",
+                    "--authorization", str(auth_path), "--modules", "http_posture",
+                ])
+                assert result.exit_code == 0, result.output
+                assert "request failed" in result.output.lower()
+                assert "Missing header" not in result.output
+            finally:
+                server.shutdown()
+
+    def test_with_insecure_self_signed_target_produces_real_findings(self):
+        """The actual fix: --insecure lets the scan proceed against the
+        same self-signed-cert target and produce real findings."""
+        from redteam_toolkit.cli import cli
+        with tempfile.TemporaryDirectory() as d:
+            server, port = self._start_self_signed_https_server(Path(d))
+            try:
+                auth_path = Path(d) / "authorization.yml"
+                _write_auth_yaml(auth_path, scope={
+                    "targets": ["127.0.0.1"], "excluded_targets": [],
+                    "allowed_categories": ["vuln-id"],
+                })
+                runner = self._runner()
+                result = runner.invoke(cli, [
+                    "vuln-id", f"https://127.0.0.1:{port}",
+                    "--authorization", str(auth_path), "--modules", "http_posture", "--insecure",
+                ])
+                assert result.exit_code == 0, result.output
+                assert "⚠ --insecure" in result.output
+                assert "Missing header" in result.output  # real findings, not the generic failure
+            finally:
+                server.shutdown()
+
+    def test_insecure_accepted_by_recon_vuln_id_and_active(self):
+        """CLI-level wiring check for all three commands (mirrors the
+        equivalent --session-header wiring test) -- doesn't need a
+        real TLS server, just confirms the flag parses and threads
+        through without error for each command."""
+        from redteam_toolkit.cli import cli
+        runner = self._runner()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path, scope={
+                "targets": ["a.staging.example.com"], "excluded_targets": [],
+                "allowed_categories": ["recon", "vuln-id", "active"],
+            })
+            for cmd, extra in [
+                (["recon", "a.staging.example.com"], []),
+                (["vuln-id", "a.staging.example.com"], []),
+                (["active", "a.staging.example.com", "--confirm", "test-2026-q1"], []),
+            ]:
+                result = runner.invoke(cli, [
+                    *cmd, "--authorization", str(path),
+                    "--modules", "nonexistent_module", "--insecure", *extra,
+                ])
+                assert result.exit_code == 0, result.output
+                assert "⚠ --insecure" in result.output
+
+    def test_engagement_ssl_context_none_by_default(self):
+        from redteam_toolkit.core.engagement import Engagement
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            eng = Engagement.load(path, Path(d) / "test.audit.jsonl")
+            assert eng.ssl_context() is None
+
+    def test_engagement_ssl_context_unverified_when_insecure(self):
+        import ssl
+
+        from redteam_toolkit.core.engagement import Engagement
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "authorization.yml"
+            _write_auth_yaml(path)
+            eng = Engagement.load(path, Path(d) / "test.audit.jsonl", insecure=True)
+            ctx = eng.ssl_context()
+            assert ctx is not None
+            assert ctx.verify_mode == ssl.CERT_NONE
+
+
 class TestScheduleCLI:
     """Issue #51: `schedule` is deliberately recon-only. These tests
     confirm both the happy path (a real, immediate recon run against a

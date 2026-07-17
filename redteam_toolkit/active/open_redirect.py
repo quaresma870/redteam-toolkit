@@ -77,7 +77,10 @@ class OpenRedirectModule(BaseReconModule):
 
         conn_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        conn = conn_cls(parsed.hostname, port, timeout=self.timeout)
+        if parsed.scheme == "https":
+            conn = conn_cls(parsed.hostname, port, timeout=self.timeout, context=self.engagement.ssl_context())
+        else:
+            conn = conn_cls(parsed.hostname, port, timeout=self.timeout)
         try:
             conn.request("GET", path, headers={"User-Agent": "redteam-toolkit/0.1"})
             resp = conn.getresponse()

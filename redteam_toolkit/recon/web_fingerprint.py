@@ -90,7 +90,7 @@ class WebFingerprintModule(BaseReconModule):
         headers.update(self.engagement.auth_headers())
         req = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout, context=self.engagement.ssl_context()) as resp:
                 resp_headers = dict(resp.headers)
                 body = resp.read().decode("utf-8", errors="replace")
             return resp_headers, body
