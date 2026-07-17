@@ -3,6 +3,17 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.5
+- feat: **`--insecure` flag** for scanning targets with a self-signed or otherwise unverifiable TLS
+  certificate, on `recon`, `vuln-id`, `active`, and `schedule`. Found and fixed a real, confirmed
+  gap: every HTTP-based module (`http_posture`, `web_fingerprint`, `endpoint_discovery`, and all
+  five active-tier injection detectors) failed silently against any self-signed-cert HTTPS target
+  — extremely common for internal/staging infrastructure, the exact kind of target this tool exists
+  to scan — producing only a generic "request failed" finding instead of actually scanning it.
+  Deliberately CLI-only (no `authorization.yml` equivalent), matching how `curl -k` works — a
+  security-relevant choice made fresh per invocation, not something that could silently carry over
+  from an old config file. Verified end-to-end against a real self-signed-cert HTTPS server, not
+  mocked.
 ### v0.8.4
 - fix: **`schedule --cron "*/0 * * * *"` hung the process indefinitely** — a real, reproduced denial-of-service (an easy typo losing a digit from `*/30`), confirmed by letting it run until it needed to be killed. Fixed by validating the interval is a positive integer before it ever reaches the `schedule` library.
 - fix: **out-of-range `--cron` hour/minute values (e.g. minute=60, hour=25) produced a raw, unhandled traceback** — `schedule.ScheduleValueError` isn't a subclass of `ValueError`, so it slipped past the CLI's error handling. Fixed with explicit range validation plus a `schedule.ScheduleError` catch-all.
