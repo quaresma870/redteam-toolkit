@@ -14,6 +14,7 @@ All notable changes to this project are documented here. See the
   security-relevant choice made fresh per invocation, not something that could silently carry over
   from an old config file. Verified end-to-end against a real self-signed-cert HTTPS server, not
   mocked.
+
 ### v0.8.4
 - fix: **`schedule --cron "*/0 * * * *"` hung the process indefinitely** — a real, reproduced denial-of-service (an easy typo losing a digit from `*/30`), confirmed by letting it run until it needed to be killed. Fixed by validating the interval is a positive integer before it ever reaches the `schedule` library.
 - fix: **out-of-range `--cron` hour/minute values (e.g. minute=60, hour=25) produced a raw, unhandled traceback** — `schedule.ScheduleValueError` isn't a subclass of `ValueError`, so it slipped past the CLI's error handling. Fixed with explicit range validation plus a `schedule.ScheduleError` catch-all.
