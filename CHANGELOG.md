@@ -3,6 +3,9 @@
 All notable changes to this project are documented here. See the
 [README](README.md) for current features, status, and roadmap.
 
+### v0.8.6
+- feat: **CI now tests against Python 3.11, 3.12, and 3.13** (previously only 3.11) — verifying the `requires-python = ">=3.11"` compatibility claim in `pyproject.toml` is actually true, not just declared. Verified on real CI before merging: all three versions pass in parallel.
+
 ### v0.8.5
 - feat: **`--insecure` flag** for scanning targets with a self-signed or otherwise unverifiable TLS
   certificate, on `recon`, `vuln-id`, `active`, and `schedule`. Found and fixed a real, confirmed
